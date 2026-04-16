@@ -1,0 +1,13 @@
+add_library(common_build_flags INTERFACE)
+
+target_compile_features(common_build_flags INTERFACE cxx_std_20)
+target_link_libraries(common_build_flags INTERFACE thirdparty::deps)
+target_include_directories(common_build_flags INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+add_subdirectory(config)
+add_subdirectory(comm)
+
+add_executable(channel_topology_config_test config/channel_topology_config_test.cpp)
+target_link_libraries(channel_topology_config_test PRIVATE comm_core config_core common_build_flags)
+add_test(NAME channel_topology_config_test COMMAND channel_topology_config_test)
+set_tests_properties(channel_topology_config_test PROPERTIES LABELS "unit;channel_topology_config")
