@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <utility>
 #include <string>
 #include <unordered_map>
@@ -48,5 +49,17 @@ bool BuildChannelTopologyIndexFromFiles(
 std::size_t ComputeQueueDepthForChannel(
     const ChannelTopologyEntry* entry,
     std::size_t default_queue_depth);
+
+/// Resolves SHM ring `consumer_capacity` / `notification_capacity`: at least
+/// `default_consumer_slots_per_channel` (for subscriber slot preemption), and at least the
+/// topology-declared consumer module count when non-zero.
+std::uint32_t ResolveShmRingConsumerCapacity(
+    const ChannelTopologyEntry* entry,
+    std::uint32_t default_consumer_slots_per_channel);
+
+/// Logical channel key for POSIX shared-memory object names: `primary_module + "__" + channel`,
+/// where `primary_module` prefers the first producer when present, otherwise the first consumer.
+/// Falls back to `entry.channel` when both lists are empty.
+std::string CanonicalShmChannelKey(const ChannelTopologyEntry& entry);
 
 }  // namespace mould::config

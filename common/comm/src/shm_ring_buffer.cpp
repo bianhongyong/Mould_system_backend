@@ -1,9 +1,13 @@
 #include "shm_ring_buffer.hpp"
 
-#include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <glog/logging.h>
+#include <sys/eventfd.h>
 #include <thread>
+#include <unistd.h>
+#include <vector>
 
 namespace mould::comm {
 
@@ -13,11 +17,19 @@ constexpr std::size_t Align8(std::size_t value) {
   return (value + 7U) & ~static_cast<std::size_t>(7U);
 }
 
-constexpr std::uint32_t kReserveRetryLimit = 16;
-constexpr std::uint32_t kReserveYieldAttempts = 4;
-constexpr std::uint32_t kReserveInitialBackoffUs = 4;
-constexpr std::uint32_t kReserveMaxBackoffUs = 128;
 constexpr std::uint32_t kCursorAdvanceFallbackReclaimInterval = 64;
+
+constexpr std::uint64_t PackSlotControl(SlotState state, std::uint64_t sequence) {
+  return (sequence << 32U) | static_cast<std::uint64_t>(static_cast<std::uint32_t>(state));
+}
+
+constexpr SlotState UnpackSlotState(std::uint64_t control) {
+  return static_cast<SlotState>(static_cast<std::uint32_t>(control & 0xFFFFFFFFULL));
+}
+
+constexpr std::uint64_t UnpackSlotSequence(std::uint64_t control) {
+  return control >> 32U;
+}
 
 }  // namespace
 
@@ -55,15 +67,16 @@ std::optional<RingLayoutView> RingLayoutView::Initialize(
   header->consumer_capacity = consumer_capacity;
   header->notification_capacity = consumer_capacity;
   header->payload_region_bytes = payload_region_bytes;
-  header->next_sequence.store(1, std::memory_order_relaxed);
-  header->reclaim_sequence.store(1, std::memory_order_relaxed);
-  header->membership_generation.store(1, std::memory_order_relaxed);
-  header->committed_slots.store(0, std::memory_order_relaxed);
-  header->reclaim_count.store(0, std::memory_order_relaxed);
-  header->membership_change_count.store(0, std::memory_order_relaxed);
-  header->consumer_online_events.store(0, std::memory_order_relaxed);
-  header->consumer_offline_events.store(0, std::memory_order_relaxed);
-  header->producer_block_total_ns.store(0, std::memory_order_relaxed);
+  header->next_sequence.store(1, std::memory_order_seq_cst);
+  header->reclaim_sequence.store(1, std::memory_order_seq_cst);
+  header->membership_generation.store(1, std::memory_order_seq_cst);
+  header->committed_slots.store(0, std::memory_order_seq_cst);
+  header->reclaim_count.store(0, std::memory_order_seq_cst);
+  header->membership_change_count.store(0, std::memory_order_seq_cst);
+  header->consumer_online_events.store(0, std::memory_order_seq_cst);
+  header->consumer_offline_events.store(0, std::memory_order_seq_cst);
+  header->producer_block_total_ns.store(0, std::memory_order_seq_cst);
+  header->producer_payload_slot_ticket.store(0, std::memory_order_seq_cst);
 
   auto* consumers = reinterpret_cast<ConsumerCursor*>(byte_base + sizeof(RingHeader));
   auto* notification_mappings = reinterpret_cast<NotificationMappingEntry*>(
@@ -73,7 +86,7 @@ std::optional<RingLayoutView> RingLayoutView::Initialize(
       sizeof(NotificationMappingEntry) * static_cast<std::size_t>(consumer_capacity));
   auto* payload_region = byte_base + layout_size;
 
-  return RingLayoutView(
+  RingLayoutView view(
       header,
       consumers,
       notification_mappings,
@@ -81,6 +94,20 @@ std::optional<RingLayoutView> RingLayoutView::Initialize(
       payload_region,
       total_size,
       layout_size);
+
+  std::vector<int> opened;
+  opened.reserve(consumer_capacity);
+  for (std::uint32_t i = 0; i < consumer_capacity; ++i) {
+    const int fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (fd < 0 || !view.SetConsumerNotificationFd(i, fd)) {
+      for (const int cleanup_fd : opened) {
+        (void)close(cleanup_fd);
+      }
+      return std::nullopt;
+    }
+    opened.push_back(fd);
+  }
+  return view;
 }
 
 std::optional<RingLayoutView> RingLayoutView::Attach(
@@ -165,51 +192,69 @@ std::size_t RingLayoutView::LayoutSizeBytes() const {
   return layout_size_;
 }
 
-bool RingLayoutView::ReserveSlot(
-    std::uint32_t slot_index,
+bool RingLayoutView::ReservePublishSlotRingOrdered(
     std::uint32_t payload_size,
-    std::uint64_t payload_offset,
-    RingSlotReservation* out) {
-  if (!IsSlotIndexValid(slot_index) || payload_size == 0 || out == nullptr || header_ == nullptr) {
+    RingSlotReservation* out,
+    std::uint32_t* out_slot_index) {
+  if (payload_size == 0 || out == nullptr || out_slot_index == nullptr || header_ == nullptr || slots_ == nullptr) {
     return false;
   }
-  if (payload_offset + payload_size > header_->payload_region_bytes) {
+  const std::uint32_t slot_count = header_->slot_count;
+  if (slot_count == 0) {
+    return false;
+  }
+  const std::size_t payload_capacity = static_cast<std::size_t>(header_->payload_region_bytes);
+  const std::size_t per_slot_capacity =
+      payload_capacity / static_cast<std::size_t>(std::max<std::uint32_t>(slot_count, 1U));
+  if (per_slot_capacity == 0 || static_cast<std::uint64_t>(payload_size) > static_cast<std::uint64_t>(per_slot_capacity)) {
+    return false;
+  }
+
+  const std::uint64_t s = header_->next_sequence.load(std::memory_order_seq_cst);
+  if (s == 0) {
+    LOG(ERROR) << "Sequence is 0";
+    return false;
+  }
+  const std::uint32_t slot_index =
+      static_cast<std::uint32_t>((s - 1U) % static_cast<std::uint64_t>(slot_count));
+  const std::uint64_t payload_offset =
+      static_cast<std::uint64_t>(slot_index) * static_cast<std::uint64_t>(per_slot_capacity);
+  if (payload_offset + static_cast<std::uint64_t>(payload_size) > header_->payload_region_bytes) {
+    LOG(ERROR) << "payload_offset + payload_size > header_->payload_region_bytes";
     return false;
   }
 
   auto& slot = slots_[slot_index];
-  bool acquired = false;
-  std::uint32_t backoff_us = kReserveInitialBackoffUs;
-  for (std::uint32_t attempt = 0; attempt < kReserveRetryLimit; ++attempt) {
-    std::uint32_t expected = static_cast<std::uint32_t>(SlotState::kEmpty);
-    if (slot.state.compare_exchange_strong(
-            expected,
-            static_cast<std::uint32_t>(SlotState::kReserved),
-            std::memory_order_acq_rel,
-            std::memory_order_acquire)) {
-      acquired = true;
-      break;
-    }
-    if (attempt < kReserveYieldAttempts) {
-      std::this_thread::yield();
-      continue;
-    }
-    std::this_thread::sleep_for(std::chrono::microseconds(backoff_us));
-    backoff_us = (backoff_us < kReserveMaxBackoffUs / 2U) ? backoff_us * 2U : kReserveMaxBackoffUs;
+  std::uint64_t control = slot.state_sequence.load(std::memory_order_seq_cst);
+  if (UnpackSlotState(control) != SlotState::kEmpty) {
+    return false;
   }
-
-  if (!acquired) {
+  const std::uint64_t desired_control = PackSlotControl(SlotState::kReserved, s);
+  if (!slot.state_sequence.compare_exchange_strong(
+          control,
+          desired_control,
+          std::memory_order_seq_cst,
+          std::memory_order_seq_cst)) {
     return false;
   }
 
-  const std::uint64_t sequence = header_->next_sequence.fetch_add(1, std::memory_order_relaxed);
+  std::uint64_t expected_seq = s;
+  if (!header_->next_sequence.compare_exchange_strong(
+          expected_seq,
+          s + 1U,
+          std::memory_order_seq_cst,
+          std::memory_order_seq_cst)) {
+    slot.state_sequence.store(PackSlotControl(SlotState::kEmpty, 0), std::memory_order_seq_cst);
+    return false;
+  }
+
   slot.payload_size = payload_size;
   slot.payload_offset = payload_offset;
-  slot.sequence = sequence;
-
-  out->sequence = sequence;
+  out->sequence = s;
   out->payload_size = payload_size;
   out->payload_offset = payload_offset;
+  *out_slot_index = slot_index;
+  //LOG(INFO) << "ReservePublishSlotRingOrdered success, slot_index=" << slot_index << " sequence=" << s;
   return true;
 }
 
@@ -218,13 +263,22 @@ bool RingLayoutView::CommitSlot(std::uint32_t slot_index) {
     return false;
   }
   auto& slot = slots_[slot_index];
-  if (slot.state.load(std::memory_order_acquire) != static_cast<std::uint32_t>(SlotState::kReserved)) {
+  std::uint64_t expected_control = slot.state_sequence.load(std::memory_order_seq_cst);
+  if (UnpackSlotState(expected_control) != SlotState::kReserved) {
+    return false;
+  }
+  const std::uint64_t committed_control =
+      PackSlotControl(SlotState::kCommitted, UnpackSlotSequence(expected_control));
+  if (!slot.state_sequence.compare_exchange_strong(
+          expected_control,
+          committed_control,
+          std::memory_order_seq_cst,
+          std::memory_order_seq_cst)) {
     return false;
   }
 
-  std::atomic_thread_fence(std::memory_order_release);
-  slot.state.store(static_cast<std::uint32_t>(SlotState::kCommitted), std::memory_order_release);
-  header_->committed_slots.fetch_add(1, std::memory_order_relaxed);
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+  header_->committed_slots.fetch_add(1, std::memory_order_seq_cst);
   return true;
 }
 
@@ -233,13 +287,62 @@ bool RingLayoutView::TryReadCommitted(std::uint32_t slot_index, RingSlotReservat
     return false;
   }
   const auto& slot = slots_[slot_index];
-  if (slot.state.load(std::memory_order_acquire) != static_cast<std::uint32_t>(SlotState::kCommitted)) {
+  constexpr int kMaxAttempts = 16;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    const std::uint64_t control1 = slot.state_sequence.load(std::memory_order_seq_cst);
+    if (UnpackSlotState(control1) != SlotState::kCommitted) {
+      return false;
+    }
+    const std::uint64_t sequence = UnpackSlotSequence(control1);
+    const std::uint32_t payload_size = slot.payload_size;
+    const std::uint64_t payload_offset = slot.payload_offset;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    const std::uint64_t control2 = slot.state_sequence.load(std::memory_order_seq_cst);
+    if (control2 != control1) {
+      continue;
+    }
+    out->sequence = sequence;
+    out->payload_size = payload_size;
+    out->payload_offset = payload_offset;
+    return true;
+  }
+  return false;
+}
+
+bool RingLayoutView::TryReadNextForConsumer(
+    std::uint32_t consumer_index,
+    RingSlotReservation* out,
+    std::uint32_t* out_slot_index) const {
+  if (out == nullptr || out_slot_index == nullptr || header_ == nullptr || consumers_ == nullptr || slots_ == nullptr ||
+      consumer_index >= header_->consumer_capacity) {
+    return false;
+  }
+  const auto& consumer = consumers_[consumer_index];
+  if (consumer.state.load(std::memory_order_seq_cst) != static_cast<std::uint32_t>(ConsumerState::kOnline)) {
+    return false;
+  }
+  const std::uint64_t expected_sequence = consumer.read_sequence.load(std::memory_order_seq_cst);
+  if (expected_sequence == 0) {
     return false;
   }
 
-  out->sequence = slot.sequence;
-  out->payload_size = slot.payload_size;
-  out->payload_offset = slot.payload_offset;
+  const std::uint32_t slot_count = header_->slot_count;
+  if (slot_count == 0) {
+    return false;
+  }
+  const std::uint32_t slot_index =
+      static_cast<std::uint32_t>((expected_sequence - 1U) % static_cast<std::uint64_t>(slot_count));
+  if (!TryReadCommitted(slot_index, out)) {
+    //LOG(ERROR) << "TryReadCommitted failed, slot_index=" << slot_index << " expected_sequence=" << expected_sequence;
+    return false;
+  }
+  if (out->sequence != expected_sequence) {
+    VLOG(2) << "TryReadNextForConsumer: sequence mismatch (retry), slot_index=" << slot_index
+            << " expected_sequence=" << expected_sequence << " out->sequence=" << out->sequence;
+    *out = RingSlotReservation{};
+    return false;
+  }
+  *out_slot_index = slot_index;
   return true;
 }
 
@@ -251,8 +354,7 @@ bool RingLayoutView::ResetSlot(std::uint32_t slot_index) {
   auto& slot = slots_[slot_index];
   slot.payload_size = 0;
   slot.payload_offset = 0;
-  slot.sequence = 0;
-  slot.state.store(static_cast<std::uint32_t>(SlotState::kEmpty), std::memory_order_release);
+  slot.state_sequence.store(PackSlotControl(SlotState::kEmpty, 0), std::memory_order_seq_cst);
   return true;
 }
 
@@ -262,18 +364,37 @@ bool RingLayoutView::RegisterConsumer(std::uint32_t consumer_index, std::uint64_
     return false;
   }
   auto& consumer = consumers_[consumer_index];
-  std::uint32_t expected_state = static_cast<std::uint32_t>(ConsumerState::kOffline);
+  std::uint32_t expected_offline = static_cast<std::uint32_t>(ConsumerState::kOffline);
   if (!consumer.state.compare_exchange_strong(
-          expected_state,
-          static_cast<std::uint32_t>(ConsumerState::kOnline),
-          std::memory_order_acq_rel,
-          std::memory_order_acquire)) {
+          expected_offline,
+          static_cast<std::uint32_t>(ConsumerState::kRegistering),
+          std::memory_order_seq_cst,
+          std::memory_order_seq_cst)) {
     return false;
   }
-  consumer.read_sequence.store(initial_read_sequence, std::memory_order_release);
-  header_->membership_generation.fetch_add(1, std::memory_order_acq_rel);
-  header_->membership_change_count.fetch_add(1, std::memory_order_relaxed);
-  header_->consumer_online_events.fetch_add(1, std::memory_order_relaxed);
+  // 必须在发布 `kOnline` 之前写入游标；否则 `MinActiveReadSequence` 可能在观测到 online 后仍读到旧游标，
+  // `TryReclaimSlotIfSafe` 会误判全局最慢游标已越过本槽序号，从而提前回收槽位并覆盖未交付消息。
+  consumer.read_sequence.store(initial_read_sequence, std::memory_order_seq_cst);
+  std::uint32_t expected_registering = static_cast<std::uint32_t>(ConsumerState::kRegistering);
+  if (!consumer.state.compare_exchange_strong(
+          expected_registering,
+          static_cast<std::uint32_t>(ConsumerState::kOnline),
+          std::memory_order_seq_cst,
+          std::memory_order_seq_cst)) {
+    consumer.read_sequence.store(0, std::memory_order_seq_cst);
+    std::uint32_t exp_still_registering = static_cast<std::uint32_t>(ConsumerState::kRegistering);
+    (void)consumer.state.compare_exchange_strong(
+        exp_still_registering,
+        static_cast<std::uint32_t>(ConsumerState::kOffline),
+        std::memory_order_seq_cst,
+        std::memory_order_seq_cst);
+    return false;
+  }
+  const std::uint64_t generation = header_->membership_generation.fetch_add(1, std::memory_order_seq_cst) + 1;
+  consumer.owner_pid = static_cast<std::uint32_t>(getpid());
+  consumer.owner_start_epoch = static_cast<std::uint32_t>(generation);
+  header_->membership_change_count.fetch_add(1, std::memory_order_seq_cst);
+  header_->consumer_online_events.fetch_add(1, std::memory_order_seq_cst);
   return true;
 }
 
@@ -284,13 +405,19 @@ bool RingLayoutView::UnregisterConsumer(std::uint32_t consumer_index) {
   auto& consumer = consumers_[consumer_index];
   const std::uint32_t previous_state = consumer.state.exchange(
       static_cast<std::uint32_t>(ConsumerState::kOffline),
-      std::memory_order_acq_rel);
-  if (previous_state != static_cast<std::uint32_t>(ConsumerState::kOnline)) {
+      std::memory_order_seq_cst);
+  if (previous_state != static_cast<std::uint32_t>(ConsumerState::kOnline) &&
+      previous_state != static_cast<std::uint32_t>(ConsumerState::kRegistering)) {
     return false;
   }
-  header_->membership_generation.fetch_add(1, std::memory_order_acq_rel);
-  header_->membership_change_count.fetch_add(1, std::memory_order_relaxed);
-  header_->consumer_offline_events.fetch_add(1, std::memory_order_relaxed);
+  consumer.owner_pid = 0;
+  consumer.owner_start_epoch = 0;
+  // 清除游标，避免后续 `RegisterConsumer` 在 `state=kOnline` 与 `read_sequence=初值` 之间暴露旧游标：
+  // 并发 `TryReadNextForConsumer` 若读到「已上线 + 上一世代游标」，会与已复用的槽内序号永久不一致。
+  consumer.read_sequence.store(0, std::memory_order_seq_cst);
+  header_->membership_generation.fetch_add(1, std::memory_order_seq_cst);
+  header_->membership_change_count.fetch_add(1, std::memory_order_seq_cst);
+  header_->consumer_offline_events.fetch_add(1, std::memory_order_seq_cst);
   (void)ReclaimCommittedSlots();
   return true;
 }
@@ -300,7 +427,7 @@ bool RingLayoutView::AddConsumerOnline(std::uint32_t consumer_index) {
     return false;
   }
   // New consumers start from the current ring head and do not replay historical backlog.
-  const std::uint64_t initial_read_sequence = header_->next_sequence.load(std::memory_order_acquire);
+  const std::uint64_t initial_read_sequence = header_->next_sequence.load(std::memory_order_seq_cst);
   return RegisterConsumer(consumer_index, initial_read_sequence == 0 ? 1 : initial_read_sequence);
 }
 
@@ -312,7 +439,7 @@ bool RingLayoutView::RecordProducerBlockDuration(std::uint64_t blocked_ns) {
   if (header_ == nullptr) {
     return false;
   }
-  header_->producer_block_total_ns.fetch_add(blocked_ns, std::memory_order_relaxed);
+  header_->producer_block_total_ns.fetch_add(blocked_ns, std::memory_order_seq_cst);
   return true;
 }
 
@@ -333,26 +460,124 @@ std::optional<std::int32_t> RingLayoutView::LoadConsumerNotificationFd(std::uint
   return notification_mappings_[consumer_index].event_fd;
 }
 
+std::optional<std::uint32_t> RingLayoutView::TryAcquireConsumerOnlineSlot() {
+  if (header_ == nullptr || consumers_ == nullptr) {
+    return std::nullopt;
+  }
+  const std::uint32_t cap = header_->consumer_capacity;
+  if (cap == 0) {
+    return std::nullopt;
+  }
+  constexpr int kSlotClaimRounds = 16;
+  for (int round = 0; round < kSlotClaimRounds; ++round) {
+    for (std::uint32_t i = 0; i < cap; ++i) {
+      if (AddConsumerOnline(i)) {
+        return i;
+      }
+    }
+    std::this_thread::yield();
+  }
+  return std::nullopt;
+}
+
+std::uint32_t RingLayoutView::TakeNextProducerPayloadSlotIndex() {
+  if (header_ == nullptr) {
+    return 0;
+  }
+  const std::uint32_t slot_count = header_->slot_count;
+  if (slot_count == 0) {
+    return 0;
+  }
+  const std::uint64_t ticket =
+      header_->producer_payload_slot_ticket.fetch_add(1, std::memory_order_seq_cst);
+  return static_cast<std::uint32_t>(ticket % static_cast<std::uint64_t>(slot_count));
+}
+
+bool RingLayoutView::PublishCommittedPayload(
+    const std::string& channel,
+    ByteBuffer payload,
+    MessageEnvelope* out_envelope,
+    RingHealthMetrics* out_before_metrics,
+    RingHealthMetrics* out_after_metrics) {
+  if (out_envelope == nullptr) {
+    return false;
+  }
+  auto* header = Header();
+  if (header == nullptr || header->slot_count == 0) {
+    return false;
+  }
+  if (out_before_metrics != nullptr) {
+    *out_before_metrics = ObserveHealthMetrics();
+  }
+
+  const std::size_t payload_capacity = static_cast<std::size_t>(header->payload_region_bytes);
+  if (payload.empty() || payload.size() > payload_capacity) {
+    return false;
+  }
+
+  const std::uint32_t slot_count = header->slot_count;
+  const std::size_t per_slot_capacity =
+      payload_capacity / static_cast<std::size_t>(std::max<std::uint32_t>(slot_count, 1U));
+  if (per_slot_capacity == 0 || payload.size() > per_slot_capacity) {
+    return false;
+  }
+  RingSlotReservation reservation{};
+  std::uint32_t slot_index = 0;
+  const auto reserve_begin = Clock::now();
+  bool warned_no_available_slot = false;
+  while (!ReservePublishSlotRingOrdered(static_cast<std::uint32_t>(payload.size()), &reservation, &slot_index)) {
+    if (!warned_no_available_slot) {
+      LOG(WARNING) << "publish backpressure: ring-ordered reserve failed, channel=" << channel
+                   << " slot_count=" << slot_count << " payload_size=" << payload.size();
+      warned_no_available_slot = true;
+    }
+    (void)ReclaimCommittedSlots();
+    std::this_thread::yield();
+  }
+  const auto reserve_elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - reserve_begin).count();
+  if (reserve_elapsed > 0) {
+    (void)RecordProducerBlockDuration(static_cast<std::uint64_t>(reserve_elapsed));
+  }
+
+  std::memcpy(
+      PayloadRegion() + reservation.payload_offset,
+      payload.data(),
+      payload.size());
+  if (!CommitSlot(slot_index)) {
+    return false;
+  }
+
+  out_envelope->channel = channel;
+  out_envelope->sequence = reservation.sequence;
+  out_envelope->delivery_id = reservation.sequence;
+  out_envelope->payload = std::move(payload);
+  if (out_after_metrics != nullptr) {
+    *out_after_metrics = ObserveHealthMetrics();
+  }
+  return true;
+}
+
 bool RingLayoutView::AdvanceConsumerCursor(std::uint32_t consumer_index, std::uint64_t next_read_sequence) {
   if (header_ == nullptr || consumers_ == nullptr || next_read_sequence == 0 ||
       consumer_index >= header_->consumer_capacity) {
     return false;
   }
   auto& consumer = consumers_[consumer_index];
-  if (consumer.state.load(std::memory_order_acquire) !=
+  if (consumer.state.load(std::memory_order_seq_cst) !=
       static_cast<std::uint32_t>(ConsumerState::kOnline)) {
     return false;
   }
 
-  std::uint64_t current = consumer.read_sequence.load(std::memory_order_acquire);
+  std::uint64_t current = consumer.read_sequence.load(std::memory_order_seq_cst);
   while (next_read_sequence >= current) {
     if (consumer.read_sequence.compare_exchange_weak(
             current,
             next_read_sequence,
-            std::memory_order_acq_rel,
-            std::memory_order_acquire)) {
+            std::memory_order_seq_cst,
+            std::memory_order_seq_cst)) {
       static std::atomic<std::uint64_t> cursor_advance_counter{0};
-      const std::uint64_t value = cursor_advance_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+      const std::uint64_t value = cursor_advance_counter.fetch_add(1, std::memory_order_seq_cst) + 1;
       if (value % kCursorAdvanceFallbackReclaimInterval == 0U) {
         (void)ReclaimCommittedSlots();
       }
@@ -378,11 +603,36 @@ std::optional<std::uint64_t> RingLayoutView::LoadConsumerCursor(std::uint32_t co
     return std::nullopt;
   }
   const auto& consumer = consumers_[consumer_index];
-  if (consumer.state.load(std::memory_order_acquire) !=
+  if (consumer.state.load(std::memory_order_seq_cst) !=
       static_cast<std::uint32_t>(ConsumerState::kOnline)) {
     return std::nullopt;
   }
-  return consumer.read_sequence.load(std::memory_order_acquire);
+  return consumer.read_sequence.load(std::memory_order_seq_cst);
+}
+
+bool RingLayoutView::ConsumerOwnerMatches(
+    std::uint32_t consumer_index,
+    std::uint32_t owner_pid,
+    std::uint32_t owner_epoch) const {
+  if (header_ == nullptr || consumers_ == nullptr || consumer_index >= header_->consumer_capacity) {
+    return false;
+  }
+  const auto& consumer = consumers_[consumer_index];
+  if (consumer.state.load(std::memory_order_seq_cst) !=
+      static_cast<std::uint32_t>(ConsumerState::kOnline)) {
+    return false;
+  }
+  return consumer.owner_pid == owner_pid && consumer.owner_start_epoch == owner_epoch;
+}
+
+bool RingLayoutView::TakeConsumerOfflineIfOwner(
+    std::uint32_t consumer_index,
+    std::uint32_t owner_pid,
+    std::uint32_t owner_epoch) {
+  if (!ConsumerOwnerMatches(consumer_index, owner_pid, owner_epoch)) {
+    return false;
+  }
+  return UnregisterConsumer(consumer_index);
 }
 
 std::optional<std::uint64_t> RingLayoutView::MinActiveReadSequence() const {
@@ -390,20 +640,26 @@ std::optional<std::uint64_t> RingLayoutView::MinActiveReadSequence() const {
     return std::nullopt;
   }
   while (true) {
-    const std::uint64_t generation_before = header_->membership_generation.load(std::memory_order_acquire);
+    const std::uint64_t generation_before = header_->membership_generation.load(std::memory_order_seq_cst);
     std::optional<std::uint64_t> min_read_sequence;
     for (std::uint32_t i = 0; i < header_->consumer_capacity; ++i) {
-      if (consumers_[i].state.load(std::memory_order_acquire) !=
+      if (consumers_[i].state.load(std::memory_order_seq_cst) !=
           static_cast<std::uint32_t>(ConsumerState::kOnline)) {
         continue;
       }
-      const std::uint64_t candidate = consumers_[i].read_sequence.load(std::memory_order_acquire);
+      const std::uint64_t candidate = consumers_[i].read_sequence.load(std::memory_order_seq_cst);
       if (!min_read_sequence.has_value() || candidate < *min_read_sequence) {
         min_read_sequence = candidate;
       }
     }
-    const std::uint64_t generation_after = header_->membership_generation.load(std::memory_order_acquire);
+    const std::uint64_t generation_after = header_->membership_generation.load(std::memory_order_seq_cst);
     if (generation_before == generation_after) {
+      // When no consumers are online, treat the ring head as the effective min cursor.
+      // This allows reclaim to progress and keeps producer publish path from stalling.
+      if (!min_read_sequence.has_value()) {
+        const std::uint64_t next_sequence = header_->next_sequence.load(std::memory_order_seq_cst);
+        return next_sequence == 0 ? 1 : next_sequence;
+      }
       return min_read_sequence;
     }
   }
@@ -414,28 +670,16 @@ std::uint64_t RingLayoutView::ReclaimCommittedSlots() {
     return 0;
   }
 
-  const std::optional<std::uint64_t> min_read_sequence = MinActiveReadSequence();
-  if (!min_read_sequence.has_value()) {
-    return 0;
-  }
-
+  // 必须与 `TryReclaimSlotIfSafe` 共用同一条原子控制字回收路径。
+  // 旧实现先 `TryReadCommitted` 再无条件 `ResetSlot`，与 `TryReclaimSlotIfSafe`、生产者并发时存在
+  // TOCTOU：槽在两次操作之间可能被回收并再次提交，此时 `ResetSlot` 会抹掉新消息并破坏环形序号协议，
+  // 表现为消费者长期 `TryReadNextForConsumer` 失败、槽占满、生产者在发布路径上反复重试预留槽位。
   std::uint64_t reclaimed = 0;
-  std::uint64_t max_reclaimed_sequence = header_->reclaim_sequence.load(std::memory_order_acquire);
   for (std::uint32_t i = 0; i < header_->slot_count; ++i) {
-    RingSlotReservation slot{};
-    if (!TryReadCommitted(i, &slot)) {
-      continue;
-    }
-    if (slot.sequence < *min_read_sequence && ResetSlot(i)) {
+    if (TryReclaimSlotIfSafe(i)) {
       ++reclaimed;
-      header_->reclaim_count.fetch_add(1, std::memory_order_relaxed);
-      header_->committed_slots.fetch_sub(1, std::memory_order_relaxed);
-      if (slot.sequence > max_reclaimed_sequence) {
-        max_reclaimed_sequence = slot.sequence;
-      }
     }
   }
-  header_->reclaim_sequence.store(max_reclaimed_sequence, std::memory_order_release);
   return reclaimed;
 }
 
@@ -447,7 +691,7 @@ std::optional<std::uint64_t> RingLayoutView::ConsumerLag(std::uint32_t consumer_
   if (!read_sequence.has_value()) {
     return std::nullopt;
   }
-  const std::uint64_t next_sequence = header_->next_sequence.load(std::memory_order_acquire);
+  const std::uint64_t next_sequence = header_->next_sequence.load(std::memory_order_seq_cst);
   if (next_sequence <= *read_sequence) {
     return 0;
   }
@@ -458,7 +702,7 @@ std::optional<std::uint64_t> RingLayoutView::MembershipGeneration() const {
   if (header_ == nullptr) {
     return std::nullopt;
   }
-  return header_->membership_generation.load(std::memory_order_acquire);
+  return header_->membership_generation.load(std::memory_order_seq_cst);
 }
 
 RingHealthMetrics RingLayoutView::ObserveHealthMetrics() const {
@@ -466,13 +710,13 @@ RingHealthMetrics RingLayoutView::ObserveHealthMetrics() const {
   if (header_ == nullptr) {
     return metrics;
   }
-  metrics.occupancy_slots = header_->committed_slots.load(std::memory_order_acquire);
+  metrics.occupancy_slots = header_->committed_slots.load(std::memory_order_seq_cst);
   metrics.slot_capacity = header_->slot_count;
-  metrics.producer_block_total_ns = header_->producer_block_total_ns.load(std::memory_order_acquire);
-  metrics.reclaim_count = header_->reclaim_count.load(std::memory_order_acquire);
-  metrics.membership_change_count = header_->membership_change_count.load(std::memory_order_acquire);
-  metrics.consumer_online_events = header_->consumer_online_events.load(std::memory_order_acquire);
-  metrics.consumer_offline_events = header_->consumer_offline_events.load(std::memory_order_acquire);
+  metrics.producer_block_total_ns = header_->producer_block_total_ns.load(std::memory_order_seq_cst);
+  metrics.reclaim_count = header_->reclaim_count.load(std::memory_order_seq_cst);
+  metrics.membership_change_count = header_->membership_change_count.load(std::memory_order_seq_cst);
+  metrics.consumer_online_events = header_->consumer_online_events.load(std::memory_order_seq_cst);
+  metrics.consumer_offline_events = header_->consumer_offline_events.load(std::memory_order_seq_cst);
 
   for (std::uint32_t i = 0; i < header_->consumer_capacity; ++i) {
     const auto lag = ConsumerLag(i);
@@ -493,37 +737,42 @@ bool RingLayoutView::TryReclaimSlotIfSafe(std::uint32_t slot_index) {
   }
 
   auto& slot = slots_[slot_index];
-  if (slot.state.load(std::memory_order_acquire) != static_cast<std::uint32_t>(SlotState::kCommitted)) {
+  const std::uint64_t committed_control = slot.state_sequence.load(std::memory_order_seq_cst);
+  if (UnpackSlotState(committed_control) != SlotState::kCommitted) {
     return false;
   }
 
+  const std::uint64_t committed_sequence = UnpackSlotSequence(committed_control);
   const std::optional<std::uint64_t> min_read_sequence = MinActiveReadSequence();
-  if (!min_read_sequence.has_value() || slot.sequence >= *min_read_sequence) {
+  if (!min_read_sequence.has_value() || committed_sequence >= *min_read_sequence) {
+    return false;
+  }
+  if (slot.state_sequence.load(std::memory_order_seq_cst) != committed_control) {
     return false;
   }
 
-  std::uint32_t expected = static_cast<std::uint32_t>(SlotState::kCommitted);
-  if (!slot.state.compare_exchange_strong(
-          expected,
-          static_cast<std::uint32_t>(SlotState::kReserved),
-          std::memory_order_acq_rel,
-          std::memory_order_acquire)) {
+  const std::uint64_t empty_control = PackSlotControl(SlotState::kEmpty, 0);
+  std::uint64_t expected_control = committed_control;
+  if (!slot.state_sequence.compare_exchange_strong(
+          expected_control,
+          empty_control,
+          std::memory_order_seq_cst,
+          std::memory_order_seq_cst)) {
     return false;
   }
 
-  slot.payload_size = 0;
-  slot.payload_offset = 0;
-  const std::uint64_t reclaimed_sequence = slot.sequence;
-  slot.sequence = 0;
-  slot.state.store(static_cast<std::uint32_t>(SlotState::kEmpty), std::memory_order_release);
+  const std::uint64_t reclaimed_sequence = committed_sequence;
 
-  std::uint64_t watermark = header_->reclaim_sequence.load(std::memory_order_acquire);
+  header_->reclaim_count.fetch_add(1, std::memory_order_seq_cst);
+  header_->committed_slots.fetch_sub(1, std::memory_order_seq_cst);
+
+  std::uint64_t watermark = header_->reclaim_sequence.load(std::memory_order_seq_cst);
   while (reclaimed_sequence > watermark &&
          !header_->reclaim_sequence.compare_exchange_weak(
              watermark,
              reclaimed_sequence,
-             std::memory_order_acq_rel,
-             std::memory_order_acquire)) {
+             std::memory_order_seq_cst,
+             std::memory_order_seq_cst)) {
   }
   return true;
 }

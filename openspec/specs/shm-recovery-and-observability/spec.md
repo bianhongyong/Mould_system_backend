@@ -7,11 +7,25 @@ Daemon-callable consumer membership control, generation-safe quorum updates, and
 ## Requirements
 
 ### Requirement: Data plane SHALL expose daemon-callable consumer online control primitives
-The middleware data plane SHALL expose consumer online control primitives for daemon invocation, including consumer add and remove operations with parameter validation and explicit transition rules.
+Consumer online control primitives SHALL be driven by the parent-process control plane and applied to the data plane. On add/remove calls, the system SHALL perform parameter validation, explicit state transition, and one reclaim advancement after remove to preserve reclaimability.
 
-#### Scenario: Daemon removes offline consumer through data-plane control API
-- **WHEN** daemon decides a consumer is offline and calls remove
-- **THEN** middleware transitions the consumer state to `OFFLINE`, excludes it from minimum-read calculations, and triggers one reclaim pass
+#### Scenario: Parent process offlines abnormal consumer
+- **WHEN** parent process detects abnormal exit of a consumer owner process and triggers remove
+- **THEN** consumer transitions to `OFFLINE`, minimum-read sequence no longer includes that consumer, and one reclaim advancement is executed
+
+### Requirement: Consumer instance identity MUST use `(owner_pid, owner_start_epoch)` tuple
+The system MUST use `(owner_pid, owner_start_epoch)` as the unique consumer instance identity. Online confirmation, offline reclaim, and slot reuse decisions MUST be based on this tuple instead of PID alone.
+
+#### Scenario: PID reuse does not misclassify old consumer as online
+- **WHEN** old consumer exits and its PID is reused by a new process with different `owner_start_epoch`
+- **THEN** the system identifies them as different instances and does not carry old instance state into the new one
+
+### Requirement: Dynamic consumer changes SHALL keep channel state consistent and leak-free
+The system SHALL support dynamic consumer add/remove/recreate operations while preserving channel-state consistency under high-frequency membership changes, and MUST guarantee no handle leaks, no slot leaks, and no zombie-online states.
+
+#### Scenario: High-frequency dynamic consumer churn
+- **WHEN** consumer online/offline/recreate operations are repeatedly executed under continuous publish traffic
+- **THEN** membership state remains consistent and resource usage stays stable without growth leaks
 
 ### Requirement: Membership updates MUST be atomic without global read-write freeze
 Active consumer set updates SHALL be published via generation-based atomic switch, so add/remove operations do not require pausing producer/consumer data operations.

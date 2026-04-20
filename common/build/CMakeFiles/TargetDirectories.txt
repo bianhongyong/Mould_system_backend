@@ -1,0 +1,17 @@
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/CMakeFiles/channel_topology_config_test.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/CMakeFiles/edit_cache.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/CMakeFiles/rebuild_cache.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/config/CMakeFiles/config_core.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/config/CMakeFiles/launch_plan_config_test.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/config/CMakeFiles/launch_plan_fork_smoke.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/config/CMakeFiles/edit_cache.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/config/CMakeFiles/rebuild_cache.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/CMakeFiles/comm_core.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/CMakeFiles/shm_segment_test.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/CMakeFiles/shm_ring_buffer_layout_test.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/CMakeFiles/multi_consumer_cursor_reclaim_test.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/CMakeFiles/daemon_membership_observability_test.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/CMakeFiles/process_shared_sync_backpressure_test.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/CMakeFiles/split_shm_bus_control_runtime_test.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/CMakeFiles/edit_cache.dir
+/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/CMakeFiles/rebuild_cache.dir

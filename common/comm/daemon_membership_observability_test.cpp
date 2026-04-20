@@ -62,8 +62,11 @@ bool TestAddConsumerStartsAtLatestSequence() {
 
   for (std::uint32_t slot = 0; slot < 3; ++slot) {
     RingSlotReservation reservation{};
-    if (!Check(ring->ReserveSlot(slot, 8, slot * 8, &reservation) && ring->CommitSlot(slot),
-               "preload committed history should succeed")) {
+    std::uint32_t slot_index = 0;
+    if (!Check(
+            ring->ReservePublishSlotRingOrdered(8, &reservation, &slot_index) && slot_index == slot &&
+                ring->CommitSlot(slot_index),
+            "preload committed history should succeed")) {
       return false;
     }
   }
@@ -99,8 +102,11 @@ bool TestRemoveConsumerTriggersImmediateReclaim() {
 
   for (std::uint32_t slot = 0; slot < 3; ++slot) {
     RingSlotReservation reservation{};
-    if (!Check(ring->ReserveSlot(slot, 8, slot * 8, &reservation) && ring->CommitSlot(slot),
-               "prepare committed slots should succeed")) {
+    std::uint32_t slot_index = 0;
+    if (!Check(
+            ring->ReservePublishSlotRingOrdered(8, &reservation, &slot_index) && slot_index == slot &&
+                ring->CommitSlot(slot_index),
+            "prepare committed slots should succeed")) {
       return false;
     }
   }
@@ -198,7 +204,11 @@ bool TestHealthMetricsCoverage() {
   }
 
   RingSlotReservation reservation{};
-  if (!Check(ring->ReserveSlot(0, 16, 0, &reservation) && ring->CommitSlot(0), "commit one slot for occupancy")) {
+  std::uint32_t slot_index = 0;
+  if (!Check(
+          ring->ReservePublishSlotRingOrdered(16, &reservation, &slot_index) && slot_index == 0 &&
+              ring->CommitSlot(slot_index),
+          "commit one slot for occupancy")) {
     return false;
   }
   if (!Check(ring->AdvanceConsumerCursor(0, reservation.sequence + 1), "advance one consumer to create lag delta")) {
@@ -261,14 +271,10 @@ bool TestDynamicMultiProcessProducerConsumerPressure30s() {
   std::atomic<int> producer_failures{0};
   std::thread producer([&]() {
     while (!producer_stop.load(std::memory_order_acquire)) {
-      const std::uint64_t produced_now = produced_count.load(std::memory_order_relaxed);
-      const std::uint32_t slot_index = static_cast<std::uint32_t>(produced_now % slot_count);
-      const std::uint64_t payload_offset =
-          static_cast<std::uint64_t>(slot_index) * static_cast<std::uint64_t>(message_bytes);
-
       RingSlotReservation reservation{};
+      std::uint32_t slot_index = 0;
       const auto reserve_start = std::chrono::steady_clock::now();
-      while (!ring->ReserveSlot(slot_index, message_bytes, payload_offset, &reservation)) {
+      while (!ring->ReservePublishSlotRingOrdered(message_bytes, &reservation, &slot_index)) {
         if (producer_stop.load(std::memory_order_acquire)) {
           return;
         }
@@ -280,6 +286,7 @@ bool TestDynamicMultiProcessProducerConsumerPressure30s() {
         (void)ring->RecordProducerBlockDuration(static_cast<std::uint64_t>(blocked_ns));
       }
 
+      const std::uint64_t payload_offset = reservation.payload_offset;
       const std::uint8_t marker = static_cast<std::uint8_t>((reservation.sequence % 251U) + 1U);
       std::uint8_t* payload = ring->PayloadRegion();
       for (std::uint32_t i = 0; i < message_bytes; ++i) {

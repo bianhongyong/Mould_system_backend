@@ -3,6 +3,7 @@
 #include "interfaces.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -21,6 +22,8 @@ struct MiddlewareConfig {
   std::chrono::milliseconds ttl{1000};
   RetryPolicy retry_policy;
   std::size_t backlog_alarm_threshold = 512;
+  /// Minimum SHM consumer / notification slots per channel (subscriber preemption pool).
+  std::uint32_t default_consumer_slots_per_channel = 10;
 
   bool IsValid() const;
 };

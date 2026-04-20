@@ -9,4 +9,5 @@
 #include "refcounted_message_store.hpp"
 #include "reliability.hpp"
 #include "shm_segment.hpp"
-#include "shm_pubsub_bus.hpp"
+#include "grpc_pubsub_bus.hpp"
+#include "shm_bus_runtime.hpp"

@@ -4,6 +4,7 @@ alwaysApply: true
 ---
 
 输出语言规范: 所有的内容请用中文输出
+所有单元测试统一利用Gtest框架写
 修改md文档要求: 
 1. task.md文档
 (1) 严格按照OpenSpec规定的格式需求

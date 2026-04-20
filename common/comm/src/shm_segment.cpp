@@ -4,6 +4,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace mould::comm {
@@ -125,6 +126,46 @@ std::optional<ShmSegment> ShmSegment::CreateOrAttach(const std::string& channel,
   }
 
   return ShmSegment(shm_name, fd, base_address, total_size, owner);
+}
+
+std::optional<ShmSegment> ShmSegment::Attach(const std::string& channel, const ShmSegmentLayout& layout) {
+  const std::string shm_name = BuildDeterministicShmName(channel);
+  const std::size_t expected_total = ComputeSegmentSize(layout);
+  if (expected_total < sizeof(SegmentHeader)) {
+    return std::nullopt;
+  }
+
+  const int fd = shm_open(shm_name.c_str(), O_RDWR, 0);
+  if (fd < 0) {
+    return std::nullopt;
+  }
+
+  struct stat st {};
+  if (fstat(fd, &st) != 0) {
+    close(fd);
+    return std::nullopt;
+  }
+  const auto total_size = static_cast<std::size_t>(st.st_size);
+  if (total_size != expected_total) {
+    close(fd);
+    return std::nullopt;
+  }
+
+  void* base_address = mmap(nullptr, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (base_address == MAP_FAILED) {
+    close(fd);
+    return std::nullopt;
+  }
+
+  const auto* header = static_cast<const SegmentHeader*>(base_address);
+  if (header->magic != layout.magic || header->version != layout.version ||
+      header->payload_capacity != layout.payload_capacity) {
+    munmap(base_address, total_size);
+    close(fd);
+    return std::nullopt;
+  }
+
+  return ShmSegment(shm_name, fd, base_address, total_size, false);
 }
 
 const std::string& ShmSegment::Name() const {

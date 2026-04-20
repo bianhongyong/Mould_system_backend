@@ -1,6 +1,7 @@
 #include "channel_topology_config.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cctype>
 #include <fstream>
 #include <sstream>
@@ -280,6 +281,17 @@ bool BuildChannelTopologyIndexFromFiles(
   return BuildChannelTopologyIndex(configs, out_topology, out_error);
 }
 
+std::uint32_t ResolveShmRingConsumerCapacity(
+    const ChannelTopologyEntry* entry,
+    const std::uint32_t default_consumer_slots_per_channel) {
+  const std::uint32_t floor_default = std::max<std::uint32_t>(1U, default_consumer_slots_per_channel);
+  if (entry == nullptr || entry->consumer_count == 0) {
+    return floor_default;
+  }
+  const auto specified = static_cast<std::uint32_t>(entry->consumer_count);
+  return std::max(floor_default, specified);
+}
+
 std::size_t ComputeQueueDepthForChannel(
     const ChannelTopologyEntry* entry,
     const std::size_t default_queue_depth) {
@@ -296,6 +308,16 @@ std::size_t ComputeQueueDepthForChannel(
     }
   }
   return resolved;
+}
+
+std::string CanonicalShmChannelKey(const ChannelTopologyEntry& entry) {
+  if (!entry.producers.empty()) {
+    return entry.producers.front() + "__" + entry.channel;
+  }
+  if (!entry.consumers.empty()) {
+    return entry.consumers.front() + "__" + entry.channel;
+  }
+  return entry.channel;
 }
 
 }  // namespace mould::config

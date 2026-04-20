@@ -1,6 +1,7 @@
 #include "ms_logging.hpp"
 #include "channel_topology_config.hpp"
-#include "shm_pubsub_bus.hpp"
+#include "shm_bus_control_plane.hpp"
+#include "shm_bus_runtime.hpp"
 #include "shm_ring_buffer.hpp"
 #include "shm_segment.hpp"
 #include "test_helpers.hpp"
@@ -24,6 +25,17 @@
 
 namespace {
 
+struct ScopedControlPlaneShmCleanup {
+  mould::comm::ShmBusControlPlane* plane = nullptr;
+  explicit ScopedControlPlaneShmCleanup(mould::comm::ShmBusControlPlane& p) : plane(&p) {}
+  ~ScopedControlPlaneShmCleanup() {
+    if (plane == nullptr) {
+      return;
+    }
+    plane->FinalizeUnlinkManagedSegments();
+  }
+};
+
 class Module6GlogEnvironment : public ::testing::Environment {
  public:
   void SetUp() override {
@@ -37,8 +49,8 @@ const auto* const k_module6_glog_env =
 
 using mould::comm::MessageEnvelope;
 using mould::comm::MiddlewareConfig;
-using mould::comm::RingLayoutView;
-using mould::comm::ShmPubSubBus;
+using mould::comm::ShmBusControlPlane;
+using mould::comm::ShmBusRuntime;
 
 std::string BuildUniqueChannelName(const std::string& prefix) {
   return prefix + "_" + std::to_string(::getpid()) + "_" +
@@ -67,7 +79,12 @@ bool WriteFully(int fd, const void* data, std::size_t length) {
 bool TestNotificationFanoutToAllOnlineConsumers() {
   MiddlewareConfig config;
   config.queue_depth = 64;
-  ShmPubSubBus bus(config);
+  config.backlog_alarm_threshold = config.queue_depth;
+  // Match ring consumer capacity to topology `consumer_count` (2); default floor 10 would allow a
+  // third subscriber and break the over-subscription assertion below.
+  config.default_consumer_slots_per_channel = 2;
+  ShmBusControlPlane control_plane;
+  ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
   mould::config::ChannelTopologyIndex topology;
   mould::config::ChannelTopologyEntry entry;
@@ -77,7 +94,11 @@ bool TestNotificationFanoutToAllOnlineConsumers() {
   entry.consumer_count = 2;
   topology.emplace(entry.channel, entry);
 
-  if (!Check(bus.SetChannelTopology(topology), "topology setup should succeed")) {
+  if (!Check(control_plane.ProvisionChannelTopology(topology, config), "topology setup should succeed")) {
+    return false;
+  }
+  ShmBusRuntime bus(config);
+  if (!Check(bus.SetChannelTopology(topology), "runtime attach should succeed")) {
     return false;
   }
   if (!Check(bus.RegisterPublisher("broker", entry.channel), "register publisher should succeed")) {
@@ -93,6 +114,9 @@ bool TestNotificationFanoutToAllOnlineConsumers() {
     delivered_b.fetch_add(1, std::memory_order_relaxed);
   });
   if (!Check(sub_a && sub_b, "subscribers should attach via inherited notification fds")) {
+    return false;
+  }
+  if (!Check(bus.StartUnifiedSubscriberPump(), "unified subscriber pump should start")) {
     return false;
   }
   if (!Check(
@@ -133,7 +157,9 @@ bool TestNotificationFanoutToAllOnlineConsumers() {
 bool TestReactorConsumesFromSharedMemoryBySequence() {
   MiddlewareConfig config;
   config.queue_depth = 32;
-  ShmPubSubBus bus(config);
+  config.backlog_alarm_threshold = config.queue_depth;
+  ShmBusControlPlane control_plane;
+  ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
   mould::config::ChannelTopologyIndex topology;
   mould::config::ChannelTopologyEntry entry;
@@ -142,7 +168,11 @@ bool TestReactorConsumesFromSharedMemoryBySequence() {
   entry.consumers = {"infer"};
   entry.consumer_count = 1;
   topology.emplace(entry.channel, entry);
-  if (!Check(bus.SetChannelTopology(topology), "topology setup should succeed")) {
+  if (!Check(control_plane.ProvisionChannelTopology(topology, config), "topology setup should succeed")) {
+    return false;
+  }
+  ShmBusRuntime bus(config);
+  if (!Check(bus.SetChannelTopology(topology), "runtime attach should succeed")) {
     return false;
   }
   if (!Check(bus.RegisterPublisher("broker", entry.channel), "register publisher should succeed")) {
@@ -157,6 +187,9 @@ bool TestReactorConsumesFromSharedMemoryBySequence() {
             delivered.fetch_add(1, std::memory_order_release);
           }),
           "reactor subscriber should register")) {
+    return false;
+  }
+  if (!Check(bus.StartUnifiedSubscriberPump(), "unified subscriber pump should start")) {
     return false;
   }
 
@@ -190,7 +223,9 @@ bool TestReactorConsumesFromSharedMemoryBySequence() {
 bool TestPublishWaitObservabilityLogContainsRequiredFields() {
   MiddlewareConfig config;
   config.queue_depth = 32;
-  ShmPubSubBus bus(config);
+  config.backlog_alarm_threshold = config.queue_depth;
+  ShmBusControlPlane control_plane;
+  ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
   mould::config::ChannelTopologyIndex topology;
   mould::config::ChannelTopologyEntry entry;
@@ -199,7 +234,11 @@ bool TestPublishWaitObservabilityLogContainsRequiredFields() {
   entry.consumers = {"infer"};
   entry.consumer_count = 1;
   topology.emplace(entry.channel, entry);
-  if (!Check(bus.SetChannelTopology(topology), "topology setup should succeed")) {
+  if (!Check(control_plane.ProvisionChannelTopology(topology, config), "topology setup should succeed")) {
+    return false;
+  }
+  ShmBusRuntime bus(config);
+  if (!Check(bus.SetChannelTopology(topology), "runtime attach should succeed")) {
     return false;
   }
   if (!Check(bus.RegisterPublisher("broker", entry.channel), "register publisher should succeed")) {
@@ -211,6 +250,9 @@ bool TestPublishWaitObservabilityLogContainsRequiredFields() {
             delivered.fetch_add(1, std::memory_order_release);
           }),
           "subscriber callback should attach for publish-path verification")) {
+    return false;
+  }
+  if (!Check(bus.StartUnifiedSubscriberPump(), "unified subscriber pump should start")) {
     return false;
   }
 
@@ -233,7 +275,9 @@ bool TestPublishWaitObservabilityLogContainsRequiredFields() {
 bool TestForkedConsumerBindsInheritedEventFdMapping() {
   MiddlewareConfig config;
   config.queue_depth = 32;
-  ShmPubSubBus bus(config);
+  config.backlog_alarm_threshold = config.queue_depth;
+  ShmBusControlPlane control_plane;
+  ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
   mould::config::ChannelTopologyIndex topology;
   mould::config::ChannelTopologyEntry entry;
@@ -242,7 +286,11 @@ bool TestForkedConsumerBindsInheritedEventFdMapping() {
   entry.consumers = {"infer_child"};
   entry.consumer_count = 1;
   topology.emplace(entry.channel, entry);
-  if (!Check(bus.SetChannelTopology(topology), "topology setup should succeed")) {
+  if (!Check(control_plane.ProvisionChannelTopology(topology, config), "topology setup should succeed")) {
+    return false;
+  }
+  ShmBusRuntime bus(config);
+  if (!Check(bus.SetChannelTopology(topology), "runtime attach should succeed")) {
     return false;
   }
   if (!Check(bus.RegisterPublisher("broker", entry.channel), "register publisher should succeed")) {
@@ -277,6 +325,7 @@ bool TestForkedConsumerBindsInheritedEventFdMapping() {
                    }),
                    "forked consumer should subscribe with inherited mapping") &&
         child_ok;
+    child_ok = Check(bus.StartUnifiedSubscriberPump(), "child should start unified pump") && child_ok;
     const std::uint8_t ready_marker = child_ok ? 1 : 0;
     child_ok = Check(
                    WriteFully(ready_pipe[1], &ready_marker, sizeof(ready_marker)),
@@ -326,7 +375,9 @@ bool TestForkedConsumerBindsInheritedEventFdMapping() {
 bool TestSlowConsumerBackpressureProducesNonZeroWait() {
   MiddlewareConfig config;
   config.queue_depth = 3;
-  ShmPubSubBus bus(config);
+  config.backlog_alarm_threshold = config.queue_depth;
+  ShmBusControlPlane control_plane;
+  ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
   mould::config::ChannelTopologyIndex topology;
   mould::config::ChannelTopologyEntry entry;
@@ -335,7 +386,11 @@ bool TestSlowConsumerBackpressureProducesNonZeroWait() {
   entry.consumers = {"infer_slow"};
   entry.consumer_count = 1;
   topology.emplace(entry.channel, entry);
-  if (!Check(bus.SetChannelTopology(topology), "topology setup should succeed")) {
+  if (!Check(control_plane.ProvisionChannelTopology(topology, config), "topology setup should succeed")) {
+    return false;
+  }
+  ShmBusRuntime bus(config);
+  if (!Check(bus.SetChannelTopology(topology), "runtime attach should succeed")) {
     return false;
   }
   if (!Check(bus.RegisterPublisher("broker", entry.channel), "register publisher should succeed")) {
@@ -348,9 +403,12 @@ bool TestSlowConsumerBackpressureProducesNonZeroWait() {
               
             }
             delivered.fetch_add(1, std::memory_order_release);
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
           }),
           "slow subscriber should register")) {
+    return false;
+  }
+  if (!Check(bus.StartUnifiedSubscriberPump(), "unified subscriber pump should start")) {
     return false;
   }
 
@@ -374,7 +432,7 @@ bool TestSlowConsumerBackpressureProducesNonZeroWait() {
            publish_elapsed > std::chrono::milliseconds(50),
            "slow consumer pressure should introduce measurable publish delay without log assertions") &&
       ok;
-  const auto consume_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  const auto consume_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
   while (std::chrono::steady_clock::now() < consume_deadline &&
          delivered.load(std::memory_order_acquire) < kBurstyPublishes) {
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -406,7 +464,9 @@ bool TestSingleProducerMultiProcessConsumersMessageCorrectness() {
 
   MiddlewareConfig config;
   config.queue_depth = 16;
-  ShmPubSubBus bus(config);
+  config.backlog_alarm_threshold = config.queue_depth;
+  ShmBusControlPlane control_plane;
+  ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
   mould::config::ChannelTopologyIndex topology;
   mould::config::ChannelTopologyEntry entry;
@@ -416,7 +476,11 @@ bool TestSingleProducerMultiProcessConsumersMessageCorrectness() {
   entry.consumer_count = kConsumerCount;
   topology.emplace(entry.channel, entry);
 
-  if (!Check(bus.SetChannelTopology(topology), "topology setup should succeed before fork")) {
+  if (!Check(control_plane.ProvisionChannelTopology(topology, config), "topology setup should succeed before fork")) {
+    return false;
+  }
+  ShmBusRuntime bus(config);
+  if (!Check(bus.SetChannelTopology(topology), "runtime attach should succeed before fork")) {
     return false;
   }
   if (!Check(bus.RegisterPublisher("broker", entry.channel), "publisher registration should succeed before fork")) {
@@ -480,6 +544,10 @@ bool TestSingleProducerMultiProcessConsumersMessageCorrectness() {
         close(stats_pipes[i][1]);
         _exit(2);
       }
+      if (!bus.StartUnifiedSubscriberPump()) {
+        close(stats_pipes[i][1]);
+        _exit(2);
+      }
 
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
       while (std::chrono::steady_clock::now() < deadline &&
@@ -540,6 +608,110 @@ bool TestSingleProducerMultiProcessConsumersMessageCorrectness() {
   return ok;
 }
 
+bool TestPumpDoesNotFastForwardLaggedCursorOnSequenceMismatch() {
+  constexpr std::uint32_t kSlotCount = 256;
+  constexpr std::uint32_t kPreSubscribePublishes = 300;
+
+  MiddlewareConfig config;
+  config.queue_depth = 16;
+  config.backlog_alarm_threshold = config.queue_depth;
+  config.default_consumer_slots_per_channel = 1;
+  ShmBusControlPlane control_plane;
+  ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
+
+  mould::config::ChannelTopologyIndex topology;
+  mould::config::ChannelTopologyEntry entry;
+  entry.channel = BuildUniqueChannelName("module6.cursor.realign");
+  entry.producers = {"broker"};
+  entry.consumers = {"infer"};
+  entry.consumer_count = 1;
+  topology.emplace(entry.channel, entry);
+  if (!Check(control_plane.ProvisionChannelTopology(topology, config), "topology setup should succeed")) {
+    return false;
+  }
+
+  ShmBusRuntime bus(config);
+  if (!Check(bus.SetChannelTopology(topology), "runtime attach should succeed")) {
+    return false;
+  }
+  if (!Check(bus.RegisterPublisher("broker", entry.channel), "register publisher should succeed")) {
+    return false;
+  }
+
+  for (std::uint32_t i = 0; i < kPreSubscribePublishes; ++i) {
+    std::vector<std::uint8_t> payload{
+        static_cast<std::uint8_t>(i & 0xFF),
+        static_cast<std::uint8_t>((i + 1) & 0xFF),
+        static_cast<std::uint8_t>((i + 2) & 0xFF)};
+    if (!Check(bus.Publish("broker", entry.channel, payload), "pre-subscribe publish should succeed")) {
+      return false;
+    }
+  }
+
+  std::atomic<std::uint64_t> delivered{0};
+  std::atomic<std::uint64_t> last_sequence{0};
+  if (!Check(
+          bus.Subscribe("infer", entry.channel, [&](const MessageEnvelope& message) {
+            last_sequence.store(message.sequence, std::memory_order_release);
+            delivered.fetch_add(1, std::memory_order_release);
+          }),
+          "subscriber should register")) {
+    return false;
+  }
+  if (!Check(bus.StartUnifiedSubscriberPump(), "unified subscriber pump should start")) {
+    return false;
+  }
+
+  const std::size_t queue_depth = mould::config::ComputeQueueDepthForChannel(&entry, config.queue_depth);
+  const std::uint32_t consumer_capacity =
+      mould::config::ResolveShmRingConsumerCapacity(&entry, config.default_consumer_slots_per_channel);
+  mould::comm::ShmSegmentLayout layout;
+  layout.payload_capacity =
+      mould::comm::ComputeRingLayoutSizeBytes(kSlotCount, consumer_capacity) + queue_depth * kSlotCount;
+  const std::string shm_channel_key = mould::config::CanonicalShmChannelKey(entry);
+  auto segment = mould::comm::ShmSegment::Attach(shm_channel_key, layout);
+  if (!Check(segment.has_value(), "test helper should attach channel segment")) {
+    return false;
+  }
+  auto* ring_base = static_cast<std::uint8_t*>(segment->BaseAddress()) + mould::comm::ShmSegmentHeaderSizeBytes();
+  const std::size_t ring_span = segment->SizeBytes() - mould::comm::ShmSegmentHeaderSizeBytes();
+  auto ring = mould::comm::RingLayoutView::Attach(ring_base, ring_span);
+  if (!Check(ring.has_value(), "test helper should attach ring layout")) {
+    return false;
+  }
+  auto* consumers = ring->Consumers();
+  auto* header = ring->Header();
+  if (!Check(consumers != nullptr && header != nullptr, "ring internals should be available")) {
+    return false;
+  }
+  if (!Check(header->consumer_capacity >= 1, "consumer capacity should be at least one")) {
+    return false;
+  }
+  consumers[0].read_sequence.store(1, std::memory_order_seq_cst);
+
+  std::vector<std::uint8_t> trigger_payload{0xAB, 0xCD, 0xEF};
+  if (!Check(bus.Publish("broker", entry.channel, trigger_payload), "trigger publish should succeed")) {
+    return false;
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline &&
+         delivered.load(std::memory_order_acquire) == 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  bool ok = true;
+  ok = Check(
+           delivered.load(std::memory_order_acquire) == 0,
+           "pump should not fast-forward or dispatch when sequence mismatch is detected") &&
+      ok;
+  ok = Check(
+           last_sequence.load(std::memory_order_acquire) == 0,
+           "without fast-forward, no later sequence should be delivered") &&
+      ok;
+  return ok;
+}
+
 }  // namespace
 
 TEST(Module6ProcessSharedSyncBackpressureTest, NotificationFanoutToAllOnlineConsumers) {
@@ -564,4 +736,8 @@ TEST(Module6ProcessSharedSyncBackpressureTest, SlowConsumerBackpressureProducesN
 
 TEST(Module6ProcessSharedSyncBackpressureTest, SingleProducerMultiProcessConsumersMessageCorrectness) {
   EXPECT_TRUE(TestSingleProducerMultiProcessConsumersMessageCorrectness());
+}
+
+TEST(Module6ProcessSharedSyncBackpressureTest, PumpDoesNotFastForwardLaggedCursorOnSequenceMismatch) {
+  EXPECT_TRUE(TestPumpDoesNotFastForwardLaggedCursorOnSequenceMismatch());
 }

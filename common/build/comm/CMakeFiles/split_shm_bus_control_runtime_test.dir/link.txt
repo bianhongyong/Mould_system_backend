@@ -1,0 +1,1 @@
+/usr/bin/c++ -g -rdynamic CMakeFiles/split_shm_bus_control_runtime_test.dir/split_shm_bus_control_runtime_test.o -o split_shm_bus_control_runtime_test   -L/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm  -L/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/config  libcomm_core.a ../config/libconfig_core.a -lthirdparty::deps 

@@ -1,5 +1,8 @@
 #include "module_base.hpp"
 
+#include "shm_bus_runtime.hpp"
+#include "shm_bus_runtime_prefork.hpp"
+
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -89,6 +92,10 @@ bool ModuleBase::Run() {
     return false;
   }
 
+  if (runtime_config_.bus_kind == BusKind::kSingleNodeShm) {
+    ShmBusRuntimeAssertForkOnlyModelOrDie();
+  }
+
   main_thread_id_ = std::this_thread::get_id();
 
   stage_ = LifecycleStage::kInit;
@@ -110,6 +117,15 @@ bool ModuleBase::Run() {
     stage_ = LifecycleStage::kStopped;
     running_.store(false);
     return false;
+  }
+
+  if (runtime_config_.bus_kind == BusKind::kSingleNodeShm) {
+    const auto shm_bus = std::dynamic_pointer_cast<ShmBusRuntime>(bus_);
+    if (shm_bus && !shm_bus->StartUnifiedSubscriberPump()) {
+      stage_ = LifecycleStage::kStopped;
+      running_.store(false);
+      return false;
+    }
   }
 
   stage_ = LifecycleStage::kRegisterTimers;

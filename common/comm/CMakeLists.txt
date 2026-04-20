@@ -7,13 +7,18 @@ add_library(
   src/payload_codec.cpp
   src/refcounted_message_store.cpp
   src/reliability.cpp
+  src/shm_bus_control_plane.cpp
+  src/shm_bus_runtime_prefork.cpp
   src/shm_ring_buffer.cpp
   src/shm_segment.cpp
-  src/shm_pubsub_bus.cpp
+  src/shm_bus_runtime.cpp
 )
 
 target_include_directories(comm_core PUBLIC include)
 target_link_libraries(comm_core PUBLIC common_build_flags config_core)
+
+find_package(GTest REQUIRED)
+include(GoogleTest)
 
 add_executable(shm_segment_test shm_segment_test.cpp)
 target_link_libraries(shm_segment_test PRIVATE comm_core common_build_flags)
@@ -21,9 +26,17 @@ add_test(NAME shm_segment_test COMMAND shm_segment_test)
 set_tests_properties(shm_segment_test PROPERTIES LABELS "unit;shm_segment")
 
 add_executable(shm_ring_buffer_layout_test shm_ring_buffer_layout_test.cpp)
-target_link_libraries(shm_ring_buffer_layout_test PRIVATE comm_core common_build_flags)
-add_test(NAME shm_ring_buffer_layout_test COMMAND shm_ring_buffer_layout_test)
-set_tests_properties(shm_ring_buffer_layout_test PROPERTIES LABELS "unit;shm_ring_buffer")
+target_link_libraries(
+  shm_ring_buffer_layout_test
+  PRIVATE
+    comm_core
+    common_build_flags
+    GTest::gtest
+)
+gtest_discover_tests(
+  shm_ring_buffer_layout_test
+  PROPERTIES LABELS "unit;shm_ring_buffer"
+)
 
 add_executable(multi_consumer_cursor_reclaim_test multi_consumer_cursor_reclaim_test.cpp)
 target_link_libraries(multi_consumer_cursor_reclaim_test PRIVATE comm_core common_build_flags)
@@ -34,9 +47,6 @@ add_executable(daemon_membership_observability_test daemon_membership_observabil
 target_link_libraries(daemon_membership_observability_test PRIVATE comm_core common_build_flags)
 add_test(NAME daemon_membership_observability_test COMMAND daemon_membership_observability_test)
 set_tests_properties(daemon_membership_observability_test PROPERTIES LABELS "unit;shm_ring_buffer;membership")
-
-find_package(GTest REQUIRED)
-include(GoogleTest)
 
 add_executable(process_shared_sync_backpressure_test process_shared_sync_backpressure_test.cpp)
 target_link_libraries(
@@ -50,4 +60,18 @@ target_link_libraries(
 gtest_discover_tests(
   process_shared_sync_backpressure_test
   PROPERTIES LABELS "unit;sync;backpressure;shm_pubsub"
+)
+
+add_executable(split_shm_bus_control_runtime_test split_shm_bus_control_runtime_test.cpp)
+target_link_libraries(
+  split_shm_bus_control_runtime_test
+  PRIVATE
+    comm_core
+    config_core
+    common_build_flags
+    GTest::gtest_main
+)
+gtest_discover_tests(
+  split_shm_bus_control_runtime_test
+  PROPERTIES LABELS "unit;shm_pubsub;control_plane"
 )

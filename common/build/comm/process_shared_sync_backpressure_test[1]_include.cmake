@@ -1,0 +1,5 @@
+if(EXISTS "/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/process_shared_sync_backpressure_test[1]_tests.cmake")
+  include("/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm/process_shared_sync_backpressure_test[1]_tests.cmake")
+else()
+  add_test(process_shared_sync_backpressure_test_NOT_BUILT process_shared_sync_backpressure_test_NOT_BUILT)
+endif()

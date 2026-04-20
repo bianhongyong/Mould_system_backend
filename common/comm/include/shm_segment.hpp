@@ -26,6 +26,12 @@ class ShmSegment {
       const std::string& channel,
       const ShmSegmentLayout& layout);
 
+  /// Open an existing POSIX shm object only (`O_RDWR`, never `O_CREAT`). Fails if missing or
+  /// on-disk header/layout does not match `layout`.
+  static std::optional<ShmSegment> Attach(
+      const std::string& channel,
+      const ShmSegmentLayout& layout);
+
   const std::string& Name() const;
   std::size_t SizeBytes() const;
   void* BaseAddress() const;

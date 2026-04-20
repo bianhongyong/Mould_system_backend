@@ -1,6 +1,7 @@
 #include "ms_logging.hpp"
 #include "channel_topology_config.hpp"
-#include "shm_pubsub_bus.hpp"
+#include "shm_bus_control_plane.hpp"
+#include "shm_bus_runtime.hpp"
 #include "shm_segment.hpp"
 #include "test_helpers.hpp"
 
@@ -14,12 +15,16 @@
 namespace {
 
 using mould::comm::BuildDeterministicShmName;
-using mould::comm::ShmPubSubBus;
+using mould::comm::MiddlewareConfig;
+using mould::comm::ShmBusControlPlane;
+using mould::comm::ShmBusRuntime;
 using mould::config::BuildChannelTopologyIndex;
 using mould::config::BuildChannelTopologyIndexFromFiles;
+using mould::config::CanonicalShmChannelKey;
 using mould::config::ChannelTopologyIndex;
 using mould::config::ModuleChannelConfig;
 using mould::config::ParseModuleChannelConfigFile;
+using mould::config::ResolveShmRingConsumerCapacity;
 
 std::string WriteTempConfig(const std::string& file_name, const std::string& content) {
   const std::string path = "/tmp/" + file_name;
@@ -173,20 +178,26 @@ bool TestBuildTopologyFromConfigFiles() {
 
 bool TestShmPreallocationUsesTopology() {
   const std::string channel = "module2_topology_prealloc_channel";
-  const std::string shm_name = BuildDeterministicShmName(channel);
-  shm_unlink(shm_name.c_str());
-
   ChannelTopologyIndex topology;
   topology[channel].channel = channel;
+  topology[channel].producers = {"broker"};
   topology[channel].consumers = {"infer_a", "infer_b", "infer_c"};
   topology[channel].consumer_count = topology[channel].consumers.size();
+  const std::string shm_name = BuildDeterministicShmName(CanonicalShmChannelKey(topology[channel]));
+  shm_unlink(shm_name.c_str());
   // Per-slot payload budget is ceil(payload_region_bytes / slot_count); with the
   // current ring layout, payload_region_bytes = queue_depth * slot_count, so the
   // configured queue_depth is also the maximum per-message payload size.
   topology[channel].params["queue_depth"] = "31";
 
-  ShmPubSubBus bus;
-  if (!Check(bus.SetChannelTopology(topology), "preallocation from topology should succeed")) {
+  MiddlewareConfig middleware_config;
+  ShmBusControlPlane control_plane;
+  ShmBusRuntime bus;
+  if (!Check(control_plane.ProvisionChannelTopology(topology, middleware_config), "preallocation from topology should succeed")) {
+    shm_unlink(shm_name.c_str());
+    return false;
+  }
+  if (!Check(bus.SetChannelTopology(topology), "runtime attach from topology should succeed")) {
     shm_unlink(shm_name.c_str());
     return false;
   }
@@ -208,13 +219,51 @@ bool TestShmPreallocationUsesTopology() {
 }
 
 bool TestBusRejectsPublishBeforeTopologyInit() {
-  ShmPubSubBus bus;
+  ShmBusRuntime bus;
   if (!Check(!bus.RegisterPublisher("broker", "broker.frames"), "register should fail before topology init")) {
     return false;
   }
   return Check(
       !bus.Publish("broker", "broker.frames", std::vector<std::uint8_t>(1, 0x01)),
       "publish should fail before topology init");
+}
+
+bool TestResolveShmRingConsumerCapacity() {
+  if (!Check(ResolveShmRingConsumerCapacity(nullptr, 10) == 10, "null entry should use default floor")) {
+    return false;
+  }
+  mould::config::ChannelTopologyEntry entry;
+  entry.channel = "c";
+  entry.consumer_count = 0;
+  if (!Check(ResolveShmRingConsumerCapacity(&entry, 10) == 10, "zero consumer_count should use default")) {
+    return false;
+  }
+  entry.consumer_count = 3;
+  if (!Check(ResolveShmRingConsumerCapacity(&entry, 10) == 10, "topology below default should use default floor")) {
+    return false;
+  }
+  entry.consumer_count = 20;
+  return Check(
+      ResolveShmRingConsumerCapacity(&entry, 10) == 20,
+      "topology above default should use larger capacity");
+}
+
+bool TestCanonicalShmChannelKeyPrefersProducerThenConsumer() {
+  mould::config::ChannelTopologyEntry producer_first;
+  producer_first.channel = "events";
+  producer_first.producers = {"broker"};
+  producer_first.consumers = {"infer"};
+  if (!Check(
+          CanonicalShmChannelKey(producer_first) == "broker__events",
+          "canonical key should prefer first producer")) {
+    return false;
+  }
+  mould::config::ChannelTopologyEntry consumer_only;
+  consumer_only.channel = "tasks";
+  consumer_only.consumers = {"worker_a"};
+  return Check(
+      CanonicalShmChannelKey(consumer_only) == "worker_a__tasks",
+      "canonical key should fall back to first consumer");
 }
 
 }  // namespace
@@ -231,6 +280,8 @@ int main(int argc, char* argv[]) {
   ok = TestBuildTopologyFromConfigFiles() && ok;
   ok = TestShmPreallocationUsesTopology() && ok;
   ok = TestBusRejectsPublishBeforeTopologyInit() && ok;
+  ok = TestResolveShmRingConsumerCapacity() && ok;
+  ok = TestCanonicalShmChannelKeyPrefersProducerThenConsumer() && ok;
 
   if (!ok) {
     LOG(ERROR) << "module2 channel topology config tests failed";

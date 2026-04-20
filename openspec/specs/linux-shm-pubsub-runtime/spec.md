@@ -7,15 +7,19 @@
 ## Requirements
 
 ### Requirement: `ShmPubSubBus` SHALL provide true multi-process IPC semantics
-`ShmPubSubBus` SHALL deliver messages across independent OS processes through mapped shared memory channels rather than process-local queues.
+Linux SHM pub/sub runtime SHALL preserve true cross-process IPC semantics after control-plane and data-plane split: the control plane governs shared-memory channel initialization and lifecycle, while the data plane performs cross-process read/write and dispatch without process-local fallback transport.
 
-#### Scenario: Broker and Infer exchange messages from separate processes
-- **WHEN** Broker publishes to a mapped channel and Infer runs in another process
-- **THEN** Infer receives the committed payload through shared memory without in-process fallback transport
+#### Scenario: Broker and Infer communicate via split runtime from separate processes
+- **WHEN** control plane has initialized channel segments, Broker data plane publishes, and Infer runs in another process
+- **THEN** Infer reads committed payload through shared memory and the message path does not use in-process fallback transport
 
 ### Requirement: Channel factory SHALL resolve single-node mode to Linux SHM runtime
-`ChannelFactory` SHALL resolve single-node bus selection to the Linux shared-memory-backed `ShmPubSubBus` implementation.
+`ChannelFactory` SHALL resolve single-node mode to a Linux SHM data-plane runtime instance. The data-plane instance SHALL assume control-plane lifecycle preparation is complete and only perform attach/use/detach, never `shm_unlink`; parent process SHALL hold a singleton data-plane base instance that forked child processes reuse through COW for read-only base state.
 
-#### Scenario: Default bus selection returns Linux SHM implementation
-- **WHEN** runtime configuration requests single-node deployment
-- **THEN** factory returns a bus instance backed by POSIX shared memory channel runtime
+#### Scenario: Single-node mode selects data-plane runtime
+- **WHEN** a business process requests bus instance under single-node deployment mode
+- **THEN** factory returns SHM data-plane implementation and that implementation does not trigger global `unlink`
+
+#### Scenario: Forked children reuse parent singleton base state
+- **WHEN** parent process creates singleton data-plane base instance and then forks business child processes
+- **THEN** child processes reuse the read-only base state directly and finish required local runtime resource initialization per process

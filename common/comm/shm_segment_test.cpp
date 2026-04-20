@@ -68,6 +68,37 @@ bool TestCreateAndAttachSegment() {
   return true;
 }
 
+bool TestAttachOnlyOpensExisting() {
+  const std::string channel = "module1_attach_only_channel";
+  const std::string shm_name = BuildDeterministicShmName(channel);
+  shm_unlink(shm_name.c_str());
+
+  ShmSegmentLayout layout;
+  layout.payload_capacity = 256;
+
+  if (!Check(!ShmSegment::Attach(channel, layout).has_value(), "Attach without POSIX object should fail")) {
+    return false;
+  }
+
+  auto owner = ShmSegment::CreateOrAttach(channel, layout);
+  if (!Check(owner.has_value(), "CreateOrAttach should create segment")) {
+    shm_unlink(shm_name.c_str());
+    return false;
+  }
+
+  auto attached = ShmSegment::Attach(channel, layout);
+  if (!Check(attached.has_value() && !attached->IsOwner(), "Attach should map existing segment as non-owner")) {
+    owner.reset();
+    shm_unlink(shm_name.c_str());
+    return false;
+  }
+
+  owner.reset();
+  attached.reset();
+  shm_unlink(shm_name.c_str());
+  return true;
+}
+
 bool TestAttachRejectsIncompatibleLayout() {
   const std::string channel = "module1_layout_mismatch_channel";
   const std::string shm_name = BuildDeterministicShmName(channel);
@@ -104,6 +135,7 @@ int main(int argc, char* argv[]) {
   bool ok = true;
   ok = TestBuildDeterministicShmName() && ok;
   ok = TestCreateAndAttachSegment() && ok;
+  ok = TestAttachOnlyOpensExisting() && ok;
   ok = TestAttachRejectsIncompatibleLayout() && ok;
 
   if (!ok) {

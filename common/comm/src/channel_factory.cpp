@@ -1,8 +1,11 @@
 #include "channel_factory.hpp"
 
-#include "shm_pubsub_bus.hpp"
+#include "reliability.hpp"
+#include "shm_bus_control_plane.hpp"
+#include "shm_bus_runtime.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -34,7 +37,6 @@ std::vector<std::pair<std::string, std::string>> ParseModuleConfigPairs(const st
 
 std::unique_ptr<IPubSubBus> ChannelFactory::Create(BusKind kind) {
   (void)kind;  // Current phase always resolves to the single-node SHM bus.
-  auto bus = std::make_unique<ShmPubSubBus>();
   const char* encoded_pairs = std::getenv("MOULD_MODULE_CHANNEL_CONFIGS");
   if (encoded_pairs == nullptr) {
     return nullptr;
@@ -45,6 +47,22 @@ std::unique_ptr<IPubSubBus> ChannelFactory::Create(BusKind kind) {
     return nullptr;
   }
   std::string error;
+  MiddlewareConfig middleware_config;
+  const char* fork_token = std::getenv("MOULD_FORK_INHERITANCE_TOKEN");
+  const bool post_fork_child = fork_token != nullptr && fork_token[0] != '\0';
+  if (post_fork_child) {
+    auto bus = std::make_unique<ShmBusRuntime>(middleware_config);
+    if (!bus->SetChannelTopologyFromModuleConfigs(module_config_files, &error)) {
+      return nullptr;
+    }
+    return bus;
+  }
+  ShmBusControlPlane control_plane;
+  if (!control_plane.ProvisionChannelTopologyFromModuleConfigs(
+          module_config_files, &error, middleware_config)) {
+    return nullptr;
+  }
+  auto bus = std::make_unique<ShmBusRuntime>(middleware_config);
   if (!bus->SetChannelTopologyFromModuleConfigs(module_config_files, &error)) {
     return nullptr;
   }

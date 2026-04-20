@@ -1,5 +1,5 @@
 #include "ms_logging.hpp"
-#include "shm_pubsub_bus.hpp"
+#include "shm_bus_runtime.hpp"
 #include "shm_ring_buffer.hpp"
 #include "shm_segment.hpp"
 #include "test_helpers.hpp"
@@ -28,7 +28,7 @@ using mould::comm::RingLayoutView;
 using mould::comm::RingSlotReservation;
 using mould::comm::ShmSegment;
 using mould::comm::ShmSegmentLayout;
-using mould::comm::ShmPubSubBus;
+using mould::comm::ShmBusRuntime;
 
 constexpr std::uint32_t kSlotCount = 8;
 constexpr std::uint32_t kConsumerCapacity = 4;
@@ -182,11 +182,14 @@ bool TestReclaimUsesMinActiveCursorCrossProcess() {
 
   for (std::uint32_t i = 0; i < 3; ++i) {
     RingSlotReservation reservation{};
-    if (!Check(ring->ReserveSlot(i, 8, i * 8, &reservation), "reserve should succeed before reclaim")) {
+    std::uint32_t slot_index = 0;
+    if (!Check(
+            ring->ReservePublishSlotRingOrdered(8, &reservation, &slot_index) && slot_index == i,
+            "ring-ordered reserve should map sequence to expected slot before reclaim")) {
       shm_unlink(shm_name.c_str());
       return false;
     }
-    if (!Check(ring->CommitSlot(i), "commit should succeed before reclaim")) {
+    if (!Check(ring->CommitSlot(slot_index), "commit should succeed before reclaim")) {
       shm_unlink(shm_name.c_str());
       return false;
     }
@@ -281,15 +284,24 @@ bool TestSlowConsumerLagAndIsolationCrossProcess() {
   RingSlotReservation slot0{};
   RingSlotReservation slot1{};
   RingSlotReservation slot2{};
-  if (!Check(ring->ReserveSlot(0, 8, 0, &slot0) && ring->CommitSlot(0), "commit slot0 should succeed")) {
+  std::uint32_t si0 = 0;
+  std::uint32_t si1 = 0;
+  std::uint32_t si2 = 0;
+  if (!Check(
+          ring->ReservePublishSlotRingOrdered(8, &slot0, &si0) && si0 == 0 && ring->CommitSlot(si0),
+          "commit slot0 should succeed")) {
     shm_unlink(shm_name.c_str());
     return false;
   }
-  if (!Check(ring->ReserveSlot(1, 8, 8, &slot1) && ring->CommitSlot(1), "commit slot1 should succeed")) {
+  if (!Check(
+          ring->ReservePublishSlotRingOrdered(8, &slot1, &si1) && si1 == 1 && ring->CommitSlot(si1),
+          "commit slot1 should succeed")) {
     shm_unlink(shm_name.c_str());
     return false;
   }
-  if (!Check(ring->ReserveSlot(2, 8, 16, &slot2) && ring->CommitSlot(2), "commit slot2 should succeed")) {
+  if (!Check(
+          ring->ReservePublishSlotRingOrdered(8, &slot2, &si2) && si2 == 2 && ring->CommitSlot(si2),
+          "commit slot2 should succeed")) {
     shm_unlink(shm_name.c_str());
     return false;
   }
@@ -338,10 +350,11 @@ bool TestCompleteConsumerSlotReclaimsSafely() {
   }
 
   RingSlotReservation reservation{};
-  if (!Check(ring->ReserveSlot(0, 8, 0, &reservation), "reserve should succeed")) {
+  std::uint32_t slot_index = 0;
+  if (!Check(ring->ReservePublishSlotRingOrdered(8, &reservation, &slot_index) && slot_index == 0, "reserve should succeed")) {
     return false;
   }
-  if (!Check(ring->CommitSlot(0), "commit should succeed")) {
+  if (!Check(ring->CommitSlot(slot_index), "commit should succeed")) {
     return false;
   }
   if (!Check(ring->AdvanceConsumerCursor(1, 2), "peer consumer should advance first")) {
@@ -384,16 +397,13 @@ bool TestContinuousProduceConsumeWithIntermediateChecks() {
 
   std::thread producer([&]() {
     while (!stop.load(std::memory_order_acquire)) {
-      const std::uint64_t current = produced.load(std::memory_order_relaxed);
-      const std::uint32_t slot_index = static_cast<std::uint32_t>(current % slot_count);
-      const std::uint64_t payload_offset =
-          static_cast<std::uint64_t>(slot_index) * static_cast<std::uint64_t>(message_bytes);
-
       RingSlotReservation reservation{};
-      if (!ring->ReserveSlot(slot_index, message_bytes, payload_offset, &reservation)) {
+      std::uint32_t slot_index = 0;
+      if (!ring->ReservePublishSlotRingOrdered(message_bytes, &reservation, &slot_index)) {
         std::this_thread::yield();
         continue;
       }
+      const std::uint64_t payload_offset = reservation.payload_offset;
       const std::uint8_t marker = static_cast<std::uint8_t>((reservation.sequence % 251U) + 1U);
       std::uint8_t* payload = ring->PayloadRegion();
       for (std::uint32_t i = 0; i < message_bytes; ++i) {
@@ -553,13 +563,12 @@ bool TestContinuousProduceConsumeCrossProcess() {
   }
 
   for (std::uint64_t produced = 0; produced < total_messages; ++produced) {
-    const std::uint32_t slot_index = static_cast<std::uint32_t>(produced % slot_count);
-    const std::uint64_t payload_offset =
-        static_cast<std::uint64_t>(slot_index) * static_cast<std::uint64_t>(message_bytes);
     RingSlotReservation reservation{};
-    while (!ring->ReserveSlot(slot_index, message_bytes, payload_offset, &reservation)) {
+    std::uint32_t slot_index = 0;
+    while (!ring->ReservePublishSlotRingOrdered(message_bytes, &reservation, &slot_index)) {
       std::this_thread::yield();
     }
+    const std::uint64_t payload_offset = reservation.payload_offset;
     const std::uint8_t marker = static_cast<std::uint8_t>((reservation.sequence % 251U) + 1U);
     std::uint8_t* payload = ring->PayloadRegion();
     for (std::uint32_t i = 0; i < message_bytes; ++i) {
@@ -715,12 +724,10 @@ bool TestContinuousProduceConsumeMultiConsumerCrossProcess() {
   }
 
   for (std::uint64_t produced = 0; produced < total_messages; ++produced) {
-    const std::uint32_t slot_index = static_cast<std::uint32_t>(produced % slot_count);
-    const std::uint64_t payload_offset =
-        static_cast<std::uint64_t>(slot_index) * static_cast<std::uint64_t>(message_bytes);
     RingSlotReservation reservation{};
+    std::uint32_t slot_index = 0;
     const auto reserve_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
-    while (!ring->ReserveSlot(slot_index, message_bytes, payload_offset, &reservation)) {
+    while (!ring->ReservePublishSlotRingOrdered(message_bytes, &reservation, &slot_index)) {
       bool child_failed = false;
       for (std::size_t i = 0; i < child_pids.size(); ++i) {
         if (child_reaped[i]) {
@@ -757,6 +764,7 @@ bool TestContinuousProduceConsumeMultiConsumerCrossProcess() {
       }
       std::this_thread::yield();
     }
+    const std::uint64_t payload_offset = reservation.payload_offset;
     const std::uint8_t marker = static_cast<std::uint8_t>((reservation.sequence % 251U) + 1U);
     std::uint8_t* payload = ring->PayloadRegion();
     for (std::uint32_t i = 0; i < message_bytes; ++i) {
@@ -834,18 +842,17 @@ bool TestBackpressureResumeWithSlowConsumerCrossProcess() {
     return false;
   }
 
-  auto produce_one = [&](std::uint64_t produced_index) -> bool {
-    const std::uint32_t slot_index = static_cast<std::uint32_t>(produced_index % slot_count);
-    const std::uint64_t payload_offset =
-        static_cast<std::uint64_t>(slot_index) * static_cast<std::uint64_t>(message_bytes);
+  auto produce_one = [&](std::uint64_t /*produced_index*/) -> bool {
     RingSlotReservation reservation{};
+    std::uint32_t slot_index = 0;
     const auto deadline = std::chrono::steady_clock::now() + reserve_timeout;
-    while (!ring->ReserveSlot(slot_index, message_bytes, payload_offset, &reservation)) {
+    while (!ring->ReservePublishSlotRingOrdered(message_bytes, &reservation, &slot_index)) {
       if (std::chrono::steady_clock::now() >= deadline) {
         return false;
       }
       std::this_thread::yield();
     }
+    const std::uint64_t payload_offset = reservation.payload_offset;
     const std::uint8_t marker = static_cast<std::uint8_t>((reservation.sequence % 251U) + 1U);
     std::uint8_t* payload = ring->PayloadRegion();
     for (std::uint32_t i = 0; i < message_bytes; ++i) {
@@ -1044,10 +1051,10 @@ bool TestDedupKeyUsesChannelAndSequence() {
   MessageEnvelope diff_sequence = first;
   diff_sequence.sequence = 43;
 
-  const std::string first_key = ShmPubSubBus::BuildDedupKey(first);
-  const std::string same_key = ShmPubSubBus::BuildDedupKey(same);
-  const std::string diff_channel_key = ShmPubSubBus::BuildDedupKey(diff_channel);
-  const std::string diff_sequence_key = ShmPubSubBus::BuildDedupKey(diff_sequence);
+  const std::string first_key = ShmBusRuntime::BuildDedupKey(first);
+  const std::string same_key = ShmBusRuntime::BuildDedupKey(same);
+  const std::string diff_channel_key = ShmBusRuntime::BuildDedupKey(diff_channel);
+  const std::string diff_sequence_key = ShmBusRuntime::BuildDedupKey(diff_sequence);
 
   if (!Check(!first_key.empty(), "dedup key should be generated for valid channel+sequence")) {
     return false;
@@ -1064,7 +1071,7 @@ bool TestDedupKeyRejectsInvalidInputs() {
   MessageEnvelope missing_channel;
   missing_channel.sequence = 7;
   if (!Check(
-          ShmPubSubBus::BuildDedupKey(missing_channel).empty(),
+          ShmBusRuntime::BuildDedupKey(missing_channel).empty(),
           "dedup key should be empty when channel is missing")) {
     return false;
   }
@@ -1073,7 +1080,7 @@ bool TestDedupKeyRejectsInvalidInputs() {
   zero_sequence.channel = "infer.input";
   zero_sequence.sequence = 0;
   return Check(
-      ShmPubSubBus::BuildDedupKey(zero_sequence).empty(),
+      ShmBusRuntime::BuildDedupKey(zero_sequence).empty(),
       "dedup key should be empty when sequence is zero");
 }
 

@@ -225,13 +225,23 @@ bool TestParseSuccess_RelativeIoPath_ResolvedAgainstLaunchPlanDir() {
       prev_cwd = cwd_buf;
     }
   }
-  (void)::chdir("/");
+  if (::chdir("/") != 0) {
+    if (!prev_cwd.empty() && ::chdir(prev_cwd.c_str()) != 0) {
+      (void)std::filesystem::remove_all(root);
+      return Check(false, "4.5 restore cwd after chdir / failed");
+    }
+    (void)std::filesystem::remove_all(root);
+    return Check(false, "4.5 chdir / failed");
+  }
   mould::config::ParsedLaunchPlan out;
   std::string err;
   const bool ok =
       mould::config::ParseLaunchPlanFile((root / "plan" / "launch_plan.txt").string(), &out, &err);
   if (!prev_cwd.empty()) {
-    (void)::chdir(prev_cwd.c_str());
+    if (::chdir(prev_cwd.c_str()) != 0) {
+      (void)std::filesystem::remove_all(root);
+      return Check(false, "4.5 restore cwd failed");
+    }
   }
   std::filesystem::remove_all(root);
   return Check(ok, "4.5 relative to launch dir");
