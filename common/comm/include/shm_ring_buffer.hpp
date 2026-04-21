@@ -165,7 +165,8 @@ class RingLayoutView {
       ByteBuffer payload,
       MessageEnvelope* out_envelope,
       RingHealthMetrics* out_before_metrics,
-      RingHealthMetrics* out_after_metrics);
+      RingHealthMetrics* out_after_metrics,
+      std::string* out_error = nullptr);
 
  private:
   RingLayoutView(

@@ -1,1 +1,0 @@
-/usr/bin/c++ -g -rdynamic CMakeFiles/shm_segment_test.dir/shm_segment_test.o -o shm_segment_test   -L/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/comm  -L/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/build/config  libcomm_core.a ../config/libconfig_core.a -lthirdparty::deps 

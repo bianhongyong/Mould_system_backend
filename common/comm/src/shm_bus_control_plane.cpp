@@ -13,9 +13,6 @@ namespace mould::comm {
 
 namespace {
 
-// Must stay aligned with `ShmBusRuntime` channel mapping (`kDefaultSlotCount`).
-constexpr std::uint32_t kShmBusDefaultSlotCount = 256;
-
 bool RegistryAllowsKey(
     const std::unordered_set<std::string>& allowed,
     bool frozen,
@@ -78,9 +75,10 @@ std::optional<ShmBusControlPlane::AttachedChannelRing> ShmBusControlPlane::Attac
   const std::uint32_t consumer_capacity =
       mould::config::ResolveShmRingConsumerCapacity(entry, DefaultConsumerSlotsPerChannel());
   ShmSegmentLayout layout{};
+  const std::uint32_t slot_count = std::max<std::uint32_t>(1U, shm_slot_count_);
   const std::size_t ring_layout_bytes =
-      ComputeRingLayoutSizeBytes(kShmBusDefaultSlotCount, consumer_capacity);
-  layout.payload_capacity = ring_layout_bytes + queue_depth * kShmBusDefaultSlotCount;
+      ComputeRingLayoutSizeBytes(slot_count, consumer_capacity);
+  layout.payload_capacity = ring_layout_bytes + queue_depth * slot_count;
   auto mapped = AttachChannel(shm_channel_key, layout);
   if (!mapped.has_value()) {
     return std::nullopt;
@@ -103,6 +101,7 @@ bool ShmBusControlPlane::ProvisionChannelTopology(
     cfg = MiddlewareConfig{};
   }
   SetDefaultConsumerSlotsPerChannel(cfg.default_consumer_slots_per_channel);
+  shm_slot_count_ = std::max<std::uint32_t>(1U, cfg.shm_slot_count);
 
   for (const auto& channel_and_entry : topology) {
     const std::string& channel = channel_and_entry.first;
@@ -114,9 +113,10 @@ bool ShmBusControlPlane::ProvisionChannelTopology(
     const std::uint32_t consumer_capacity =
         mould::config::ResolveShmRingConsumerCapacity(entry_ptr, default_consumer_slots_per_channel_);
     ShmSegmentLayout layout{};
+    const std::uint32_t slot_count = shm_slot_count_;
     const std::size_t ring_layout_bytes =
-        ComputeRingLayoutSizeBytes(kShmBusDefaultSlotCount, consumer_capacity);
-    layout.payload_capacity = ring_layout_bytes + queue_depth * kShmBusDefaultSlotCount;
+        ComputeRingLayoutSizeBytes(slot_count, consumer_capacity);
+    layout.payload_capacity = ring_layout_bytes + queue_depth * slot_count;
     auto mapped = CreateOrAttachChannel(shm_key, layout);
     if (!mapped.has_value()) {
       return false;
@@ -128,9 +128,9 @@ bool ShmBusControlPlane::ProvisionChannelTopology(
       ring = RingLayoutView::Initialize(
           ring_base,
           ring_span,
-          kShmBusDefaultSlotCount,
+          slot_count,
           consumer_capacity,
-          static_cast<std::uint64_t>(queue_depth * kShmBusDefaultSlotCount));
+          static_cast<std::uint64_t>(queue_depth * slot_count));
     }
     if (!ring.has_value()) {
       return false;

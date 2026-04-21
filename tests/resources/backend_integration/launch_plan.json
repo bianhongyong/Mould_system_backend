@@ -1,0 +1,78 @@
+{
+  "minloglevel": 1,
+  "communication": {
+    "slot_count": 256
+  },
+  "modules": {
+    "FrameSourceModule": {
+      "module_name": "FrameSourceModule",
+      "resource": {
+        "startup_priority": 10,
+        "cpu_set": "",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 500
+      },
+      "module_params": {},
+      "io_channels_config_path": "frame_source_io.json"
+    },
+    "FeatureExtractModule": {
+      "module_name": "FeatureExtractModule",
+      "resource": {
+        "startup_priority": 10,
+        "cpu_set": "",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 500
+      },
+      "module_params": {},
+      "io_channels_config_path": "feature_extract_io.json"
+    },
+    "FeatureExtractReplicaModule": {
+      "module_name": "FeatureExtractReplicaModule",
+      "resource": {
+        "startup_priority": 10,
+        "cpu_set": "2",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 500
+      },
+      "module_params": {},
+      "io_channels_config_path": "feature_extract_replica_io.json"
+    },
+    "ResultSinkModule": {
+      "module_name": "ResultSinkModule",
+      "resource": {
+        "startup_priority": 10,
+        "cpu_set": "3",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 500
+      },
+      "module_params": {},
+      "io_channels_config_path": "result_sink_io.json"
+    },
+    "ResultSinkReplicaModule": {
+      "module_name": "ResultSinkReplicaModule",
+      "resource": {
+        "startup_priority": 10,
+        "cpu_set": "4",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 500
+      },
+      "module_params": {},
+      "io_channels_config_path": "result_sink_replica_io.json"
+    }
+  }
+}

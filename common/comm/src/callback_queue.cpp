@@ -31,7 +31,7 @@ std::size_t CallbackQueue::DrainAll() {
   return drained;
 }
 
-std::size_t CallbackQueue::WaitAndDrain(std::chrono::milliseconds timeout) {
+std::size_t CallbackQueue::WaitAndDrain(std::chrono::microseconds timeout) {
   {
     std::unique_lock<std::mutex> lock(mutex_);
     cv_.wait_for(lock, timeout, [this]() { return !queue_.empty(); });

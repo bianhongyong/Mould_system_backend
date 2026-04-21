@@ -1,0 +1,12 @@
+{
+  "input_channel": {
+    "frame.raw": {
+      "queue_depth": "32"
+    }
+  },
+  "output_channel": {
+    "feature.vec.replica": {
+      "queue_depth_per_consumer": "32"
+    }
+  }
+}

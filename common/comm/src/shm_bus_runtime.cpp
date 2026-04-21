@@ -3,6 +3,9 @@
 
 #include "channel_topology_config.hpp"
 
+#include <absl/status/status.h>
+#include <absl/status/statusor.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -22,7 +25,6 @@ namespace mould::comm {
 
 namespace {
 
-constexpr std::uint32_t kDefaultSlotCount = 256;
 constexpr int kMaxEpollEventsPerWait = 256;
 
 bool NotifyEventFd(int fd, std::uint64_t signal_value) {
@@ -348,12 +350,24 @@ void ShmBusRuntime::UnifiedSubscriberPumpLoop() {
 }
 
 bool ShmBusRuntime::Publish(const std::string& module_name, const std::string& channel, ByteBuffer payload) {
+  auto result = PublishWithStatus(module_name, channel, std::move(payload));
+  if (!result.ok()) {
+    LOG(WARNING) << "ShmBusRuntime::Publish failed, module=" << module_name
+                 << " channel=" << channel
+                 << " reason=" << result.status();
+    return false;
+  }
+  return true;
+}
+
+absl::StatusOr<std::uint64_t> ShmBusRuntime::PublishWithStatus(
+    const std::string& module_name, const std::string& channel, ByteBuffer payload) {
   RingLayoutView ring;
   {
     std::lock_guard<std::mutex> lock(runtime_mutex_);
     const auto runtime_iter = runtime_by_channel_.find(channel);
     if (runtime_iter == runtime_by_channel_.end()) {
-      return false;
+      return absl::NotFoundError("channel runtime not found: " + channel);
     }
     ring = runtime_iter->second.ring;
   }
@@ -361,8 +375,12 @@ bool ShmBusRuntime::Publish(const std::string& module_name, const std::string& c
   MessageEnvelope envelope;
   RingHealthMetrics before_metrics{};
   RingHealthMetrics after_metrics{};
-  if (!ring.PublishCommittedPayload(channel, std::move(payload), &envelope, &before_metrics, &after_metrics)) {
-    return false;
+  std::string publish_error;
+  if (!ring.PublishCommittedPayload(
+          channel, std::move(payload), &envelope, &before_metrics, &after_metrics, &publish_error)) {
+    const std::string reason =
+        publish_error.empty() ? "PublishCommittedPayload failed (unknown)" : publish_error;
+    return absl::UnavailableError("publish failed on channel " + channel + ": " + reason);
   }
 
   envelope.publisher_module = module_name;
@@ -392,7 +410,7 @@ bool ShmBusRuntime::Publish(const std::string& module_name, const std::string& c
 
   (void)before_metrics;
   (void)after_metrics;
-  return true;
+  return envelope.sequence;
 }
 
 std::string ShmBusRuntime::BuildDedupKey(const MessageEnvelope& message) {
@@ -465,14 +483,15 @@ bool ShmBusRuntime::EnsureChannelMappedAttachLocked(const std::string& channel) 
   }
   const config::ChannelTopologyEntry& entry = topology_iter->second;
   const std::size_t queue_depth = config::ComputeQueueDepthForChannel(&entry, config_.queue_depth);
+  const std::uint32_t slot_count = std::max<std::uint32_t>(1U, config_.shm_slot_count);
 
   const std::string shm_channel_key = config::CanonicalShmChannelKey(entry);
 
   ShmSegmentLayout layout;
   const std::uint32_t consumer_capacity =
       config::ResolveShmRingConsumerCapacity(&entry, config_.default_consumer_slots_per_channel);
-  const std::size_t ring_layout_bytes = ComputeRingLayoutSizeBytes(kDefaultSlotCount, consumer_capacity);
-  layout.payload_capacity = ring_layout_bytes + queue_depth * kDefaultSlotCount;
+  const std::size_t ring_layout_bytes = ComputeRingLayoutSizeBytes(slot_count, consumer_capacity);
+  layout.payload_capacity = ring_layout_bytes + queue_depth * slot_count;
   if (!RuntimeRegistryAllowsKey(allowed_shm_channel_keys_, registry_frozen_, shm_channel_key)) {
     LOG(WARNING) << "shm runtime: rejected Attach; registry frozen for key=" << shm_channel_key;
     return false;
@@ -562,6 +581,13 @@ bool GrpcPubSubBus::Publish(
     const std::string& /*channel*/,
     ByteBuffer /*payload*/) {
   return false;
+}
+
+absl::StatusOr<std::uint64_t> GrpcPubSubBus::PublishWithStatus(
+    const std::string& /*module_name*/,
+    const std::string& channel,
+    ByteBuffer /*payload*/) {
+  return absl::UnimplementedError("GrpcPubSubBus::PublishWithStatus is not implemented, channel=" + channel);
 }
 
 }  // namespace mould::comm

@@ -6,6 +6,8 @@
 #include "shm_segment.hpp"
 #include "channel_topology_config.hpp"
 
+#include <absl/status/statusor.h>
+
 #include <atomic>
 #include <deque>
 #include <memory>
@@ -49,6 +51,10 @@ class ShmBusRuntime : public IPubSubBus {
       const std::string& channel,
       MessageHandler handler) override;
   bool Publish(const std::string& module_name, const std::string& channel, ByteBuffer payload) override;
+  absl::StatusOr<std::uint64_t> PublishWithStatus(
+      const std::string& module_name,
+      const std::string& channel,
+      ByteBuffer payload) override;
   const ReliabilityMetrics& Metrics() const;
 
   /// Starts a single worker thread that `epoll_wait`s all subscriber notification fds and dispatches

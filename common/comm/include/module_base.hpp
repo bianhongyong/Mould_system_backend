@@ -4,6 +4,8 @@
 #include "channel_factory.hpp"
 #include "interfaces.hpp"
 
+#include <absl/status/statusor.h>
+
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -11,12 +13,17 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace mould::comm {
 
 struct ModuleRuntimeConfig {
   BusKind bus_kind = BusKind::kSingleNodeShm;
-  std::chrono::milliseconds loop_idle_wait{2};
+  std::chrono::microseconds loop_idle_wait{100};
+  std::vector<std::pair<std::string, std::string>> module_config_files;
+  std::string module_channel_config_path;
 };
 
 struct ModuleRuntimeContext {
@@ -55,17 +62,13 @@ class ModuleBase {
 
  protected:
   virtual bool Init();
-  virtual bool RegisterPublications();
-  virtual bool RegisterSubscriptions();
-  virtual bool RegisterTimers();
+  virtual bool DoInit() = 0;
+  virtual bool SetupSubscriptions() = 0;
   virtual void OnRunIteration();
 
-  bool AddPublication(const std::string& channel);
-  bool AddSubscription(const std::string& channel, IPubSubBus::MessageHandler handler);
-  TimerScheduler::TimerId AddPeriodicTimer(
-      std::chrono::milliseconds interval,
-      std::function<void()> callback);
+  bool SubscribeOneChannel(const std::string& channel, IPubSubBus::MessageHandler handler);
   bool Publish(const std::string& channel, ByteBuffer payload);
+  absl::StatusOr<std::uint64_t> PublishWithStatus(const std::string& channel, ByteBuffer payload);
 
   // Test-only/manual wiring constructor.
   explicit ModuleBase(
@@ -77,9 +80,7 @@ class ModuleBase {
   enum class LifecycleStage {
     kCreated,
     kInit,
-    kRegisterPublications,
-    kRegisterSubscriptions,
-    kRegisterTimers,
+    kSetupSubscriptions,
     kRunning,
     kStopped,
   };
@@ -92,6 +93,7 @@ class ModuleBase {
   std::shared_ptr<IPubSubBus> bus_;
   std::unique_ptr<TimerScheduler> timer_scheduler_;
   CallbackQueue callback_queue_;
+  std::unordered_map<std::string, IPubSubBus::MessageHandler> declared_subscription_handlers_;
 
   std::atomic<bool> running_{false};
   std::thread::id main_thread_id_;

@@ -15,7 +15,7 @@ class CallbackQueue {
 
   void Push(Callback callback);
   std::size_t DrainAll();
-  std::size_t WaitAndDrain(std::chrono::milliseconds timeout);
+  std::size_t WaitAndDrain(std::chrono::microseconds timeout);
 
  private:
   std::mutex mutex_;

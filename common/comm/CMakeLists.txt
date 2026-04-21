@@ -3,10 +3,14 @@ add_library(
   src/callback_queue.cpp
   src/channel_factory.cpp
   src/image_pipeline.cpp
+  src/module_factory_registry.cpp
   src/module_base.cpp
   src/payload_codec.cpp
+  src/ready_pipe_protocol.cpp
+  src/restart_policy.cpp
   src/refcounted_message_store.cpp
   src/reliability.cpp
+  src/supervisor.cpp
   src/shm_bus_control_plane.cpp
   src/shm_bus_runtime_prefork.cpp
   src/shm_ring_buffer.cpp
@@ -16,6 +20,12 @@ add_library(
 
 target_include_directories(comm_core PUBLIC include)
 target_link_libraries(comm_core PUBLIC common_build_flags config_core)
+if(TARGET absl::status)
+  target_link_libraries(comm_core PUBLIC absl::status)
+endif()
+if(TARGET absl::statusor)
+  target_link_libraries(comm_core PUBLIC absl::statusor)
+endif()
 
 find_package(GTest REQUIRED)
 include(GoogleTest)
@@ -74,4 +84,43 @@ target_link_libraries(
 gtest_discover_tests(
   split_shm_bus_control_runtime_test
   PROPERTIES LABELS "unit;shm_pubsub;control_plane"
+)
+
+add_executable(mouldBase_test mouldBase_test.cpp)
+target_link_libraries(
+  mouldBase_test
+  PRIVATE
+    comm_core
+    common_build_flags
+    GTest::gtest_main
+)
+gtest_discover_tests(
+  mouldBase_test
+  PROPERTIES LABELS "unit;module_base"
+)
+
+add_executable(supervisor_test supervisor_test.cpp)
+target_link_libraries(
+  supervisor_test
+  PRIVATE
+    comm_core
+    common_build_flags
+    GTest::gtest_main
+)
+gtest_discover_tests(
+  supervisor_test
+  PROPERTIES LABELS "unit;supervisor"
+)
+
+add_executable(module_factory_registry_test module_factory_registry_test.cpp)
+target_link_libraries(
+  module_factory_registry_test
+  PRIVATE
+    comm_core
+    common_build_flags
+    GTest::gtest_main
+)
+gtest_discover_tests(
+  module_factory_registry_test
+  PROPERTIES LABELS "unit;module_factory_registry"
 )

@@ -13,6 +13,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 
 DECLARE_int32(mould_test_startup_priority);
 DECLARE_int32(mould_test_batch_size);
@@ -155,6 +156,95 @@ bool TestParseSuccess_MultiModule_AllIoReachable() {
     return false;
   }
   return Check(out.global_topology.size() >= 2, "4.2 aggregated topology");
+}
+
+// 4.2.1 ParseSuccess_TopLevelMinloglevel
+bool TestParseSuccess_TopLevelMinloglevel() {
+  const fs::path root = MakeUniqueRoot();
+  WriteFile(root / "io.json", MinimalIoJson());
+  const std::string plan = R"({
+  "minloglevel": 2,
+  "modules": {
+    "ModA": {
+      "module_name": "ModA",
+      "resource": { "mould_test_startup_priority": 10 },
+      "module_params": {},
+      "io_channels_config_path": "io.json"
+    }
+  }
+})";
+  WriteFile(root / "launch_plan.txt", plan);
+
+  mould::config::ParsedLaunchPlan out;
+  std::string err;
+  const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err);
+  std::filesystem::remove_all(root);
+  if (!Check(ok, "4.2.1 parse")) {
+    return false;
+  }
+  if (!Check(out.minloglevel.has_value(), "4.2.1 minloglevel present")) {
+    return false;
+  }
+  return Check(*(out.minloglevel) == 2, "4.2.1 minloglevel value");
+}
+
+bool TestParseSuccess_CommunicationSlotCount() {
+  const fs::path root = MakeUniqueRoot();
+  WriteFile(root / "io.json", MinimalIoJson());
+  const std::string plan = R"({
+  "communication": {
+    "slot_count": 1024
+  },
+  "modules": {
+    "ModA": {
+      "module_name": "ModA",
+      "resource": { "mould_test_startup_priority": 10 },
+      "module_params": {},
+      "io_channels_config_path": "io.json"
+    }
+  }
+})";
+  WriteFile(root / "launch_plan.txt", plan);
+
+  mould::config::ParsedLaunchPlan out;
+  std::string err;
+  const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err);
+  std::filesystem::remove_all(root);
+  if (!Check(ok, "4.2.2 parse communication slot_count")) {
+    return false;
+  }
+  if (!Check(out.communication_slot_count.has_value(), "4.2.2 slot_count present")) {
+    return false;
+  }
+  return Check(*(out.communication_slot_count) == 1024U, "4.2.2 slot_count value");
+}
+
+bool TestParseFails_InvalidCommunicationSlotCount() {
+  const fs::path root = MakeUniqueRoot();
+  WriteFile(root / "io.json", MinimalIoJson());
+  const std::string plan = R"({
+  "communication": {
+    "slot_count": 0
+  },
+  "modules": {
+    "ModA": {
+      "module_name": "ModA",
+      "resource": { "mould_test_startup_priority": 10 },
+      "module_params": {},
+      "io_channels_config_path": "io.json"
+    }
+  }
+})";
+  WriteFile(root / "launch_plan.txt", plan);
+
+  mould::config::ParsedLaunchPlan out;
+  std::string err;
+  const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err);
+  std::filesystem::remove_all(root);
+  if (!Check(!ok, "4.2.3 parse should fail invalid communication slot_count")) {
+    return false;
+  }
+  return Check(err.find("communication.slot_count") != std::string::npos, "4.2.3 error field path");
 }
 
 // 4.3 ParseFails_LaunchPlanFileNotFound
@@ -745,6 +835,205 @@ bool TestFork_MultiChild_EachReadsOwnModuleParamsGflags() {
   return Check(WIFEXITED(st2) && WEXITSTATUS(st2) == 0, "4.21 child B");
 }
 
+bool TestResourceSchemaValidator_RejectsMissingRequiredFields() {
+  const fs::path root = MakeUniqueRoot();
+  WriteFile(root / "io.json", MinimalIoJson());
+  const std::string plan = R"({
+  "modules": {
+    "StrictA": {
+      "module_name": "StrictA",
+      "resource": {
+        "startup_priority": 10,
+        "cpu_set": "0,2",
+        "restart_backoff_ms": 100,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 5000
+      },
+      "module_params": {},
+      "io_channels_config_path": "io.json"
+    }
+  }
+})";
+  WriteFile(root / "launch_plan.txt", plan);
+
+  mould::config::ParsedLaunchPlan out;
+  std::string err;
+  mould::config::LaunchPlanValidationOptions options;
+  options.enforce_strict_resource_schema = true;
+  const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err, options);
+  std::filesystem::remove_all(root);
+  if (!Check(!ok, "7.1 strict schema should reject missing required field")) {
+    return false;
+  }
+  return Check(err.find("ready_timeout_ms") != std::string::npos, "7.1 error should mention missing field");
+}
+
+bool TestResourceSchemaValidator_RejectsInvalidCpuSetAndMapsLegacyCpuId() {
+  {
+    const fs::path root = MakeUniqueRoot();
+    WriteFile(root / "io.json", MinimalIoJson());
+    const std::string plan = R"({
+    "modules": {
+      "StrictEmptyCpuSet": {
+        "module_name": "StrictEmptyCpuSet",
+        "resource": {
+          "startup_priority": 1,
+          "cpu_set": "",
+          "restart_backoff_ms": 100,
+          "restart_max_retries": 3,
+          "restart_window_ms": 1000,
+          "restart_fuse_ms": 5000,
+          "ready_timeout_ms": 3000
+        },
+        "module_params": {},
+        "io_channels_config_path": "io.json"
+      }
+    }
+  })";
+    WriteFile(root / "launch_plan.txt", plan);
+    mould::config::ParsedLaunchPlan out;
+    std::string err;
+    mould::config::LaunchPlanValidationOptions options;
+    options.enforce_strict_resource_schema = true;
+    const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err, options);
+    std::filesystem::remove_all(root);
+    if (!Check(ok, "7.2 empty cpu_set should be treated as no binding")) {
+      return false;
+    }
+    if (!Check(out.modules.size() == 1, "7.2 empty cpu_set one module")) {
+      return false;
+    }
+    const auto it = out.modules[0].resource.find("cpu_set");
+    if (!Check(it != out.modules[0].resource.end(), "7.2 empty cpu_set remains present")) {
+      return false;
+    }
+    if (!Check(std::holds_alternative<std::string>(it->second), "7.2 empty cpu_set stored as string")) {
+      return false;
+    }
+    if (!Check(std::get<std::string>(it->second).empty(), "7.2 empty cpu_set should normalize to empty string")) {
+      return false;
+    }
+  }
+
+  {
+    const fs::path root = MakeUniqueRoot();
+    WriteFile(root / "io.json", MinimalIoJson());
+    const std::string plan = R"({
+    "modules": {
+      "StrictB": {
+        "module_name": "StrictB",
+        "resource": {
+          "startup_priority": 1,
+          "cpu_set": "0,a,4",
+          "restart_backoff_ms": 100,
+          "restart_max_retries": 3,
+          "restart_window_ms": 1000,
+          "restart_fuse_ms": 5000,
+          "ready_timeout_ms": 3000
+        },
+        "module_params": {},
+        "io_channels_config_path": "io.json"
+      }
+    }
+  })";
+    WriteFile(root / "launch_plan.txt", plan);
+    mould::config::ParsedLaunchPlan out;
+    std::string err;
+    mould::config::LaunchPlanValidationOptions options;
+    options.enforce_strict_resource_schema = true;
+    const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err, options);
+    std::filesystem::remove_all(root);
+    if (!Check(!ok, "7.2 invalid cpu_set should fail")) {
+      return false;
+    }
+    if (!Check(err.find("cpu_set") != std::string::npos, "7.2 invalid cpu_set error path")) {
+      return false;
+    }
+  }
+
+  {
+    const fs::path root = MakeUniqueRoot();
+    WriteFile(root / "io.json", MinimalIoJson());
+    const std::string plan = R"({
+    "modules": {
+      "StrictC": {
+        "module_name": "StrictC",
+        "resource": {
+          "startup_priority": 1,
+          "cpu_id": 3,
+          "restart_backoff_ms": 100,
+          "restart_max_retries": 3,
+          "restart_window_ms": 1000,
+          "restart_fuse_ms": 5000,
+          "ready_timeout_ms": 3000
+        },
+        "module_params": {},
+        "io_channels_config_path": "io.json"
+      }
+    }
+  })";
+    WriteFile(root / "launch_plan.txt", plan);
+    mould::config::ParsedLaunchPlan out;
+    std::string err;
+    mould::config::LaunchPlanValidationOptions options;
+    options.enforce_strict_resource_schema = true;
+    const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err, options);
+    std::filesystem::remove_all(root);
+    if (!Check(ok, "7.2 legacy cpu_id should map to cpu_set")) {
+      return false;
+    }
+    if (!Check(out.modules.size() == 1, "7.2 mapped case one module")) {
+      return false;
+    }
+    const auto it = out.modules[0].resource.find("cpu_set");
+    if (!Check(it != out.modules[0].resource.end(), "7.2 mapped resource contains cpu_set")) {
+      return false;
+    }
+    if (!Check(std::holds_alternative<std::string>(it->second), "7.2 cpu_set normalized string")) {
+      return false;
+    }
+    return Check(std::get<std::string>(it->second) == "3", "7.2 cpu_id maps to cpu_set");
+  }
+}
+
+bool TestLaunchPlan_RejectsUnregisteredModuleFactory() {
+  const fs::path root = MakeUniqueRoot();
+  WriteFile(root / "io.json", MinimalIoJson());
+  const std::string plan = R"({
+  "modules": {
+    "UnknownMod": {
+      "module_name": "UnknownMod",
+      "resource": {
+        "startup_priority": 1,
+        "cpu_set": "0",
+        "restart_backoff_ms": 100,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 5000,
+        "ready_timeout_ms": 3000
+      },
+      "module_params": {},
+      "io_channels_config_path": "io.json"
+    }
+  }
+})";
+  WriteFile(root / "launch_plan.txt", plan);
+
+  mould::config::ParsedLaunchPlan out;
+  std::string err;
+  const std::unordered_set<std::string> registered = {"KnownMod"};
+  mould::config::LaunchPlanValidationOptions options;
+  options.enforce_strict_resource_schema = true;
+  options.registered_module_names = &registered;
+  const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err, options);
+  std::filesystem::remove_all(root);
+  if (!Check(!ok, "1.3 startup precheck should reject unregistered module")) {
+    return false;
+  }
+  return Check(err.find("unregistered module factory") != std::string::npos, "1.3 error details");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -758,6 +1047,9 @@ int main(int argc, char** argv) {
   ok = TestParseSuccess_SingleModule_Minimal() && ok;
   ResetTestGflags();
   ok = TestParseSuccess_MultiModule_AllIoReachable() && ok;
+  ok = TestParseSuccess_TopLevelMinloglevel() && ok;
+  ok = TestParseSuccess_CommunicationSlotCount() && ok;
+  ok = TestParseFails_InvalidCommunicationSlotCount() && ok;
   ok = TestParseFails_LaunchPlanFileNotFound() && ok;
   ok = TestParseFails_ModuleIoFileNotFound() && ok;
   ok = TestParseSuccess_RelativeIoPath_ResolvedAgainstLaunchPlanDir() && ok;
@@ -778,6 +1070,9 @@ int main(int argc, char** argv) {
   ok = TestErrorMessage_ContainsModuleAndFieldPath() && ok;
   ok = TestApplyFailsUnknownGflagKey() && ok;
   ok = TestFork_MultiChild_EachReadsOwnModuleParamsGflags() && ok;
+  ok = TestResourceSchemaValidator_RejectsMissingRequiredFields() && ok;
+  ok = TestResourceSchemaValidator_RejectsInvalidCpuSetAndMapsLegacyCpuId() && ok;
+  ok = TestLaunchPlan_RejectsUnregisteredModuleFactory() && ok;
 
   if (!ok) {
     LOG(ERROR) << "launch_plan_config_test failed";

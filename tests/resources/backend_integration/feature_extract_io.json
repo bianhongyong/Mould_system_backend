@@ -1,0 +1,9 @@
+{
+  "input_channel": {
+    "frame.raw": {
+      "queue_depth": "32"
+    }
+  },
+  "output_channel": {
+  }
+}

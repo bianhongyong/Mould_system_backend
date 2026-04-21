@@ -24,6 +24,8 @@ struct MiddlewareConfig {
   std::size_t backlog_alarm_threshold = 512;
   /// Minimum SHM consumer / notification slots per channel (subscriber preemption pool).
   std::uint32_t default_consumer_slots_per_channel = 10;
+  /// SHM ring slot count per channel. Default 256, can be overridden by launch plan communication config.
+  std::uint32_t shm_slot_count = 256;
 
   bool IsValid() const;
 };

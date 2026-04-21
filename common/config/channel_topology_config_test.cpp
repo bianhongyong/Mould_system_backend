@@ -162,11 +162,21 @@ bool TestTopologyRejectsParameterConflict() {
 
 bool TestBuildTopologyFromConfigFiles() {
   const std::string broker_path = WriteTempConfig(
-      "module2_file_broker.txt",
-      "output broker.frames queue_depth_per_consumer=8\n");
+      "module2_file_broker.json",
+      R"({
+  "input_channel": {},
+  "output_channel": {
+    "broker.frames": {"queue_depth_per_consumer": "8"}
+  }
+})");
   const std::string infer_path = WriteTempConfig(
-      "module2_file_infer.txt",
-      "input broker.frames queue_depth_per_consumer=8\n");
+      "module2_file_infer.json",
+      R"({
+  "input_channel": {
+    "broker.frames": {"queue_depth_per_consumer": "8"}
+  },
+  "output_channel": {}
+})");
   std::string error;
   ChannelTopologyIndex topology;
   const bool ok = BuildChannelTopologyIndexFromFiles(

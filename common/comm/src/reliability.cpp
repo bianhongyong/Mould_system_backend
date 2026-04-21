@@ -7,7 +7,8 @@ namespace mould::comm {
 bool MiddlewareConfig::IsValid() const {
   return queue_depth > 0 && ttl.count() > 0 && retry_policy.initial_backoff.count() > 0 &&
       retry_policy.backoff_multiplier >= 1.0 && backlog_alarm_threshold <= queue_depth &&
-      default_consumer_slots_per_channel >= 1 && default_consumer_slots_per_channel <= 1024;
+      default_consumer_slots_per_channel >= 1 && default_consumer_slots_per_channel <= 1024 &&
+      shm_slot_count >= 1;
 }
 
 ReliablePublisher::ReliablePublisher(const MiddlewareConfig& config, ReliabilityMetrics* metrics)

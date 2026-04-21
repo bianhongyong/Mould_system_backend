@@ -1,2 +1,0 @@
-/usr/bin/ar qc libconfig_core.a CMakeFiles/config_core.dir/src/channel_topology_config.o CMakeFiles/config_core.dir/src/launch_plan_config.o
-/usr/bin/ranlib libconfig_core.a

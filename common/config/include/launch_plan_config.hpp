@@ -4,15 +4,18 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
 namespace mould::config {
 
-// Launch plan (JSON in `launch_plan.txt` or any path): top-level object MUST contain exactly
-// `modules`, an object whose keys are module ids. Each module entry MUST include:
+// Launch plan (JSON in `launch_plan.txt` or any path): top-level object MUST contain `modules`
+// and MAY contain `minloglevel` (integer in [0,3]). `modules` is an object whose keys are
+// module ids. Each module entry MUST include:
 //   `module_name` (string, MUST equal the parent key in `modules`),
 //   `resource` (object of scalars), `module_params` (object of scalars),
 //   `io_channels_config_path` (string path to that module's I/O JSON file).
@@ -30,17 +33,47 @@ namespace mould::config {
 // Scalar values parsed from JSON in `resource` / `module_params` (task 2.2).
 using LaunchPlanScalar = std::variant<std::string, std::int64_t, double, bool>;
 
+struct ResourceSchema {
+  std::int64_t startup_priority = 0;
+  std::string cpu_set;
+  std::int64_t restart_backoff_ms = 0;
+  std::int64_t restart_max_retries = 0;
+  std::int64_t restart_window_ms = 0;
+  std::int64_t restart_fuse_ms = 0;
+  std::int64_t ready_timeout_ms = 0;
+};
+
+class ResourceSchemaValidator {
+ public:
+  // Validates required fields and normalizes legacy cpu_id into cpu_set when cpu_set is absent.
+  // Returns false with field-path-rich error on validation failure.
+  static bool ValidateAndNormalize(
+      std::unordered_map<std::string, LaunchPlanScalar>* resource,
+      ResourceSchema* out_schema,
+      std::string* out_error,
+      const std::string& field_prefix);
+};
+
+struct LaunchPlanValidationOptions {
+  bool enforce_strict_resource_schema = false;
+  const std::unordered_set<std::string>* registered_module_names = nullptr;
+};
+
 struct ParsedModuleLaunchEntry {
   // Key of this module under `modules` in launch_plan.json (must equal `module_name`).
   std::string modules_dict_key;
   std::string module_name;
   std::unordered_map<std::string, LaunchPlanScalar> resource;
+  ResourceSchema resource_schema;
   std::unordered_map<std::string, LaunchPlanScalar> module_params;
+  std::string io_channels_config_path_resolved;
   ModuleChannelConfig channels;
 };
 
 struct ParsedLaunchPlan {
   std::filesystem::path launch_plan_path;
+  std::optional<std::int64_t> minloglevel;
+  std::optional<std::uint32_t> communication_slot_count;
   std::vector<ParsedModuleLaunchEntry> modules;
   ChannelTopologyIndex global_topology;
 };
@@ -52,7 +85,8 @@ struct ParsedLaunchPlan {
 bool ParseLaunchPlanFile(
     const std::string& launch_plan_file_path,
     ParsedLaunchPlan* out_plan,
-    std::string* out_error);
+  std::string* out_error,
+  const LaunchPlanValidationOptions& options = {});
 
 // After ParseLaunchPlanFile: for every key in every module's `resource` and `module_params`,
 // calls `google::SetCommandLineOption` with the same key name. Unknown keys fail (task 2.3).

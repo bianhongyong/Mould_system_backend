@@ -1104,3 +1104,17 @@ TEST(SplitShmBusControlRuntimeTest, AttachOnlyWithoutCreator_FailsTopology) {
 TEST(SplitShmBusControlRuntimeTest, LaunchPlanFrozen_ChannelNamingStable) {
   EXPECT_TRUE(TestLaunchPlanFrozen_ChannelNamingStable());
 }
+
+TEST(SplitShmBusControlRuntimeSpec, ShmControlPlane_OfflineConsumerSlotsByPidOnly) {
+  EXPECT_TRUE(TestControlPlane_TakeAllConsumersOfflineForProcessPid_two_channels());
+}
+
+TEST(SplitShmBusControlRuntimeSpec, ShmChannelLifecycle_UnlinkOnlyOnFinalMasterShutdown) {
+  EXPECT_TRUE(TestShmUnlinkPolicy_RuntimeVsFinalExit());
+}
+
+TEST(SplitShmBusControlRuntimeSpec, SupervisorIntegration_CrashRestartLoopAndShmMembership) {
+  EXPECT_TRUE(TestControlPlane_TakeAllConsumersOfflineForProcessPid_one_channel());
+  EXPECT_TRUE(TestControlPlane_TakeAllConsumersOfflineForProcessPid_two_channels());
+  EXPECT_TRUE(TestSplitControlParent_DataChild_ProducerLiveConsumerTakenOfflineBySupervisor());
+}

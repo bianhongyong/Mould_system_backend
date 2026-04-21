@@ -1,9 +1,0 @@
-/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/CMakeFiles/comm_core.dir
-/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/CMakeFiles/shm_segment_test.dir
-/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/CMakeFiles/shm_ring_buffer_layout_test.dir
-/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/CMakeFiles/multi_consumer_cursor_reclaim_test.dir
-/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/CMakeFiles/daemon_membership_observability_test.dir
-/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/CMakeFiles/process_shared_sync_backpressure_test.dir
-/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/CMakeFiles/split_shm_bus_control_runtime_test.dir
-/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/CMakeFiles/edit_cache.dir
-/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/CMakeFiles/rebuild_cache.dir

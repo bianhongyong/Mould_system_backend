@@ -1,5 +1,8 @@
 #pragma once
 
+#include <absl/status/status.h>
+#include <absl/status/statusor.h>
+
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -62,6 +65,17 @@ class IPubSubBus {
       const std::string& module_name,
       const std::string& channel,
       ByteBuffer payload) = 0;
+
+  // Returns committed sequence on success; detailed status on failure.
+  virtual absl::StatusOr<std::uint64_t> PublishWithStatus(
+      const std::string& module_name,
+      const std::string& channel,
+      ByteBuffer payload) {
+    if (Publish(module_name, channel, std::move(payload))) {
+      return 0U;
+    }
+    return absl::UnknownError("publish failed without detailed reason");
+  }
 };
 
 }  // namespace mould::comm

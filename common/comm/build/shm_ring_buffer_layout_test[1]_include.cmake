@@ -1,5 +1,0 @@
-if(EXISTS "/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/shm_ring_buffer_layout_test[1]_tests.cmake")
-  include("/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/common/comm/build/shm_ring_buffer_layout_test[1]_tests.cmake")
-else()
-  add_test(shm_ring_buffer_layout_test_NOT_BUILT shm_ring_buffer_layout_test_NOT_BUILT)
-endif()

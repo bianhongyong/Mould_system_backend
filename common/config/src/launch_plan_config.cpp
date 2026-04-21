@@ -3,6 +3,7 @@
 #include <gflags/gflags.h>
 
 #include <cmath>
+#include <cctype>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -16,6 +17,9 @@ namespace {
 
 constexpr const char* kIoPathField = "io_channels_config_path";
 constexpr const char* kModulesField = "modules";
+constexpr const char* kMinLogLevelField = "minloglevel";
+constexpr const char* kCommunicationField = "communication";
+constexpr const char* kSlotCountField = "slot_count";
 
 bool IsAllowedChannelChar(const char value) {
   return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
@@ -561,6 +565,179 @@ bool ParseStringMapScalars(
   return true;
 }
 
+bool TryExtractInt64(
+    const LaunchPlanScalar& value,
+    const std::string& field_path,
+    std::int64_t* out,
+    std::string* err) {
+  if (std::holds_alternative<std::int64_t>(value)) {
+    *out = std::get<std::int64_t>(value);
+    return true;
+  }
+  if (std::holds_alternative<double>(value)) {
+    const double dv = std::get<double>(value);
+    if (std::isfinite(dv) && std::floor(dv) == dv &&
+        dv >= static_cast<double>(std::numeric_limits<std::int64_t>::min()) &&
+        dv <= static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+      *out = static_cast<std::int64_t>(dv);
+      return true;
+    }
+    if (err != nullptr) {
+      *err = field_path + ": must be integer";
+    }
+    return false;
+  }
+  if (std::holds_alternative<std::string>(value)) {
+    const std::string& s = std::get<std::string>(value);
+    if (s.empty()) {
+      if (err != nullptr) {
+        *err = field_path + ": must be non-empty integer string";
+      }
+      return false;
+    }
+    std::size_t consumed = 0;
+    try {
+      const long long parsed = std::stoll(s, &consumed, 10);
+      if (consumed != s.size()) {
+        if (err != nullptr) {
+          *err = field_path + ": must be integer string";
+        }
+        return false;
+      }
+      *out = static_cast<std::int64_t>(parsed);
+      return true;
+    } catch (...) {
+      if (err != nullptr) {
+        *err = field_path + ": must be integer string";
+      }
+      return false;
+    }
+  }
+  if (err != nullptr) {
+    *err = field_path + ": must be integer";
+  }
+  return false;
+}
+
+bool ValidateAndNormalizeCpuSet(const std::string& cpu_set, std::string* normalized, std::string* err, const std::string& field_path) {
+  if (cpu_set.empty()) {
+    // Empty cpu_set means "no CPU affinity binding".
+    if (normalized != nullptr) {
+      *normalized = "";
+    }
+    (void)err;
+    (void)field_path;
+    return true;
+  }
+  std::stringstream ss(cpu_set);
+  std::string token;
+  std::vector<std::int64_t> cpus;
+  std::unordered_set<std::int64_t> seen;
+  while (std::getline(ss, token, ',')) {
+    if (token.empty()) {
+      if (err != nullptr) {
+        *err = field_path + ": contains empty CPU token";
+      }
+      return false;
+    }
+    for (const char c : token) {
+      if (!std::isdigit(static_cast<unsigned char>(c))) {
+        if (err != nullptr) {
+          *err = field_path + ": invalid token '" + token + "'";
+        }
+        return false;
+      }
+    }
+    std::int64_t value = -1;
+    if (!TryExtractInt64(token, field_path, &value, err)) {
+      return false;
+    }
+    if (value < 0 || value > 4095) {
+      if (err != nullptr) {
+        *err = field_path + ": CPU value out of range [0,4095]";
+      }
+      return false;
+    }
+    if (!seen.insert(value).second) {
+      if (err != nullptr) {
+        *err = field_path + ": duplicate CPU value " + std::to_string(value);
+      }
+      return false;
+    }
+    cpus.push_back(value);
+  }
+  if (cpus.empty()) {
+    if (err != nullptr) {
+      *err = field_path + ": must contain at least one CPU";
+    }
+    return false;
+  }
+  std::ostringstream oss;
+  for (std::size_t i = 0; i < cpus.size(); ++i) {
+    if (i > 0) {
+      oss << ",";
+    }
+    oss << cpus[i];
+  }
+  *normalized = oss.str();
+  return true;
+}
+
+bool LookupRequiredInt(
+    const std::unordered_map<std::string, LaunchPlanScalar>& resource,
+    const std::string& key,
+    const std::string& field_prefix,
+    std::int64_t* out,
+    std::string* out_error) {
+  const auto it = resource.find(key);
+  if (it == resource.end()) {
+    if (out_error != nullptr) {
+      *out_error = field_prefix + "." + key + ": missing required field";
+    }
+    return false;
+  }
+  return TryExtractInt64(it->second, field_prefix + "." + key, out, out_error);
+}
+
+bool LookupRequiredCpuSet(
+    std::unordered_map<std::string, LaunchPlanScalar>* resource,
+    const std::string& field_prefix,
+    std::string* out_cpu_set,
+    std::string* out_error) {
+  auto cpu_set_it = resource->find("cpu_set");
+  if (cpu_set_it == resource->end()) {
+    const auto legacy_it = resource->find("cpu_id");
+    if (legacy_it != resource->end()) {
+      std::int64_t legacy_cpu = -1;
+      if (!TryExtractInt64(legacy_it->second, field_prefix + ".cpu_id", &legacy_cpu, out_error)) {
+        return false;
+      }
+      (*resource)["cpu_set"] = std::to_string(legacy_cpu);
+      cpu_set_it = resource->find("cpu_set");
+    }
+  }
+  if (cpu_set_it == resource->end()) {
+    if (out_error != nullptr) {
+      *out_error = field_prefix + ".cpu_set: missing required field";
+    }
+    return false;
+  }
+  if (!std::holds_alternative<std::string>(cpu_set_it->second)) {
+    if (out_error != nullptr) {
+      *out_error = field_prefix + ".cpu_set: must be string";
+    }
+    return false;
+  }
+  std::string normalized;
+  if (!ValidateAndNormalizeCpuSet(
+          std::get<std::string>(cpu_set_it->second), &normalized, out_error, field_prefix + ".cpu_set")) {
+    return false;
+  }
+  (*resource)["cpu_set"] = normalized;
+  *out_cpu_set = normalized;
+  return true;
+}
+
 bool ScalarsEqualForMerge(const LaunchPlanScalar& a, const LaunchPlanScalar& b) {
   if (a.index() == b.index()) {
     return a == b;
@@ -600,6 +777,47 @@ bool RecordGlobalScalar(
   return true;
 }
 
+}  // namespace
+
+bool ResourceSchemaValidator::ValidateAndNormalize(
+    std::unordered_map<std::string, LaunchPlanScalar>* resource,
+    ResourceSchema* out_schema,
+    std::string* out_error,
+    const std::string& field_prefix) {
+  if (resource == nullptr || out_schema == nullptr) {
+    if (out_error != nullptr) {
+      *out_error = "resource schema validator received null output pointer";
+    }
+    return false;
+  }
+  ResourceSchema schema;
+  if (!LookupRequiredInt(*resource, "startup_priority", field_prefix, &schema.startup_priority, out_error)) {
+    return false;
+  }
+  if (!LookupRequiredCpuSet(resource, field_prefix, &schema.cpu_set, out_error)) {
+    return false;
+  }
+  if (!LookupRequiredInt(*resource, "restart_backoff_ms", field_prefix, &schema.restart_backoff_ms, out_error)) {
+    return false;
+  }
+  if (!LookupRequiredInt(*resource, "restart_max_retries", field_prefix, &schema.restart_max_retries, out_error)) {
+    return false;
+  }
+  if (!LookupRequiredInt(*resource, "restart_window_ms", field_prefix, &schema.restart_window_ms, out_error)) {
+    return false;
+  }
+  if (!LookupRequiredInt(*resource, "restart_fuse_ms", field_prefix, &schema.restart_fuse_ms, out_error)) {
+    return false;
+  }
+  if (!LookupRequiredInt(*resource, "ready_timeout_ms", field_prefix, &schema.ready_timeout_ms, out_error)) {
+    return false;
+  }
+  *out_schema = schema;
+  return true;
+}
+
+namespace {
+
 std::filesystem::path ResolveIoPath(const std::filesystem::path& launch_dir, const std::string& raw) {
   std::filesystem::path p(raw);
   if (p.is_absolute()) {
@@ -636,7 +854,11 @@ bool ApplyLaunchPlanScalarsToRegisteredGflags(const ParsedLaunchPlan& plan, std:
   return true;
 }
 
-bool ParseLaunchPlanFile(const std::string& launch_plan_file_path, ParsedLaunchPlan* out_plan, std::string* out_error) {
+bool ParseLaunchPlanFile(
+  const std::string& launch_plan_file_path,
+  ParsedLaunchPlan* out_plan,
+  std::string* out_error,
+  const LaunchPlanValidationOptions& options) {
   if (out_plan == nullptr) {
     if (out_error != nullptr) {
       *out_error = "output plan pointer is null";
@@ -670,6 +892,8 @@ bool ParseLaunchPlanFile(const std::string& launch_plan_file_path, ParsedLaunchP
   }
 
   const JValue* modules_node = FindObjectKey(root.o, kModulesField);
+  const JValue* minloglevel_node = FindObjectKey(root.o, kMinLogLevelField);
+  const JValue* communication_node = FindObjectKey(root.o, kCommunicationField);
   if (modules_node == nullptr) {
     if (out_error != nullptr) {
       *out_error = launch_plan_file_path + ": missing top-level '" + std::string(kModulesField) + "'";
@@ -682,9 +906,66 @@ bool ParseLaunchPlanFile(const std::string& launch_plan_file_path, ParsedLaunchP
     }
     return false;
   }
+  if (minloglevel_node != nullptr) {
+    LaunchPlanScalar minloglevel_scalar;
+    if (!ScalarFromJsonLeaf(*minloglevel_node, kMinLogLevelField, &minloglevel_scalar, out_error)) {
+      return false;
+    }
+    std::int64_t minloglevel_value = 0;
+    if (!TryExtractInt64(minloglevel_scalar, kMinLogLevelField, &minloglevel_value, out_error)) {
+      return false;
+    }
+    if (minloglevel_value < 0 || minloglevel_value > 3) {
+      if (out_error != nullptr) {
+        *out_error = std::string(kMinLogLevelField) + ": out of range [0,3]";
+      }
+      return false;
+    }
+    out_plan->minloglevel = minloglevel_value;
+  }
+  if (communication_node != nullptr) {
+    if (communication_node->kind != JValue::kObject) {
+      if (out_error != nullptr) {
+        *out_error = std::string(kCommunicationField) + ": must be object";
+      }
+      return false;
+    }
+    const JValue* slot_count_node = FindObjectKey(communication_node->o, kSlotCountField);
+    for (const auto& [ck, cv] : communication_node->o) {
+      if (ck != kSlotCountField) {
+        if (out_error != nullptr) {
+          *out_error =
+              std::string(kCommunicationField) + ": unknown key '" + ck + "'";
+        }
+        return false;
+      }
+      (void)cv;
+    }
+    if (slot_count_node != nullptr) {
+      LaunchPlanScalar slot_scalar;
+      if (!ScalarFromJsonLeaf(
+              *slot_count_node, std::string(kCommunicationField) + "." + kSlotCountField, &slot_scalar, out_error)) {
+        return false;
+      }
+      std::int64_t slot_count_value = 0;
+      if (!TryExtractInt64(
+              slot_scalar, std::string(kCommunicationField) + "." + kSlotCountField, &slot_count_value, out_error)) {
+        return false;
+      }
+      if (slot_count_value <= 0 ||
+          slot_count_value > static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        if (out_error != nullptr) {
+          *out_error = std::string(kCommunicationField) + "." + kSlotCountField +
+              ": must be in range [1,4294967295]";
+        }
+        return false;
+      }
+      out_plan->communication_slot_count = static_cast<std::uint32_t>(slot_count_value);
+    }
+  }
 
   for (const auto& [k, v] : root.o) {
-    if (k != kModulesField) {
+    if (k != kModulesField && k != kMinLogLevelField && k != kCommunicationField) {
       if (out_error != nullptr) {
         *out_error = launch_plan_file_path + ": unknown top-level key '" + k + "'";
       }
@@ -774,7 +1055,20 @@ bool ParseLaunchPlanFile(const std::string& launch_plan_file_path, ParsedLaunchP
     if (!ParseStringMapScalars(*res_v, "modules." + dict_key + ".resource", &entry.resource, out_error)) {
       return false;
     }
+    if (options.enforce_strict_resource_schema &&
+        !ResourceSchemaValidator::ValidateAndNormalize(
+            &entry.resource, &entry.resource_schema, out_error, "modules." + dict_key + ".resource")) {
+      return false;
+    }
     if (!ParseStringMapScalars(*par_v, "modules." + dict_key + ".module_params", &entry.module_params, out_error)) {
+      return false;
+    }
+
+    if (options.registered_module_names != nullptr &&
+        options.registered_module_names->find(entry.module_name) == options.registered_module_names->end()) {
+      if (out_error != nullptr) {
+        *out_error = "modules." + dict_key + ".module_name: unregistered module factory '" + entry.module_name + "'";
+      }
       return false;
     }
 
@@ -791,6 +1085,7 @@ bool ParseLaunchPlanFile(const std::string& launch_plan_file_path, ParsedLaunchP
 
     const std::filesystem::path io_abs = ResolveIoPath(launch_dir, io_v->s).lexically_normal();
     const std::string io_abs_str = io_abs.string();
+    entry.io_channels_config_path_resolved = io_abs_str;
     if (!ParseModuleIoJsonFile(entry.module_name, io_abs_str, &entry.channels, out_error)) {
       if (out_error != nullptr && out_error->find("failed to open") != std::string::npos) {
         *out_error = "modules." + dict_key + ": io file not found at " + io_abs_str;

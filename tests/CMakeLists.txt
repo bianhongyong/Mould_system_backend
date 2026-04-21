@@ -8,3 +8,21 @@ if(TARGET broker_infer_e2e)
   add_test(NAME broker_infer_e2e_test COMMAND broker_infer_e2e)
   set_tests_properties(broker_infer_e2e_test PROPERTIES LABELS "middleware;e2e")
 endif()
+
+if(TARGET backend_main)
+  add_test(
+    NAME backend_main_smoke_test
+    COMMAND
+      bash
+      "${CMAKE_SOURCE_DIR}/tests/infrastructure/backend_main_smoke.sh"
+      "$<TARGET_FILE:backend_main>"
+      "${CMAKE_SOURCE_DIR}/launch_plan.json"
+  )
+  set_tests_properties(
+    backend_main_smoke_test
+    PROPERTIES
+      LABELS "smoke;backend_main"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      TIMEOUT 10
+  )
+endif()

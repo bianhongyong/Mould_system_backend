@@ -1,5 +1,6 @@
 #include "shm_ring_buffer.hpp"
 
+#include <atomic>
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -498,12 +499,22 @@ bool RingLayoutView::PublishCommittedPayload(
     ByteBuffer payload,
     MessageEnvelope* out_envelope,
     RingHealthMetrics* out_before_metrics,
-    RingHealthMetrics* out_after_metrics) {
+    RingHealthMetrics* out_after_metrics,
+    std::string* out_error) {
+  if (out_error != nullptr) {
+    out_error->clear();
+  }
   if (out_envelope == nullptr) {
+    if (out_error != nullptr) {
+      *out_error = "out_envelope is null";
+    }
     return false;
   }
   auto* header = Header();
   if (header == nullptr || header->slot_count == 0) {
+    if (out_error != nullptr) {
+      *out_error = "ring header invalid or slot_count is 0";
+    }
     return false;
   }
   if (out_before_metrics != nullptr) {
@@ -512,6 +523,9 @@ bool RingLayoutView::PublishCommittedPayload(
 
   const std::size_t payload_capacity = static_cast<std::size_t>(header->payload_region_bytes);
   if (payload.empty() || payload.size() > payload_capacity) {
+    if (out_error != nullptr) {
+      *out_error = "payload empty or exceeds payload capacity";
+    }
     return false;
   }
 
@@ -519,6 +533,9 @@ bool RingLayoutView::PublishCommittedPayload(
   const std::size_t per_slot_capacity =
       payload_capacity / static_cast<std::size_t>(std::max<std::uint32_t>(slot_count, 1U));
   if (per_slot_capacity == 0 || payload.size() > per_slot_capacity) {
+    if (out_error != nullptr) {
+      *out_error = "payload exceeds per-slot capacity";
+    }
     return false;
   }
   RingSlotReservation reservation{};
@@ -545,7 +562,23 @@ bool RingLayoutView::PublishCommittedPayload(
       payload.data(),
       payload.size());
   if (!CommitSlot(slot_index)) {
+    if (out_error != nullptr) {
+      *out_error = "CommitSlot failed";
+    }
+    LOG(WARNING) << "publish commit failed: channel=" << channel
+                 << " slot_index=" << slot_index
+                 << " sequence=" << reservation.sequence
+                 << " payload_size=" << payload.size()
+                 << " reserve_block_ns=" << reserve_elapsed;
     return false;
+  }
+  static std::atomic<std::uint64_t> commit_success_count{0};
+  const std::uint64_t success_count = commit_success_count.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (success_count % 10000U == 0U) {
+    LOG(INFO) << "publish commit success sample: channel=" << channel
+              << " total_success=" << success_count
+              << " slot_index=" << slot_index
+              << " sequence=" << reservation.sequence;
   }
 
   out_envelope->channel = channel;

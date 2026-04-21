@@ -2,8 +2,10 @@
 
 #include "shm_bus_runtime.hpp"
 #include "shm_bus_runtime_prefork.hpp"
+#include "channel_topology_config.hpp"
 
 #include <algorithm>
+#include <glog/logging.h>
 #include <stdexcept>
 #include <utility>
 
@@ -89,6 +91,9 @@ ModuleBase::ModuleBase(
 
 bool ModuleBase::Run() {
   if (!bus_ || !timer_scheduler_ || running_.exchange(true)) {
+    LOG(ERROR) << "ModuleBase::Run precheck failed, module=" << module_name_ << " bus=" << (bus_ != nullptr)
+               << " timer_scheduler=" << (timer_scheduler_ != nullptr)
+               << " already_running=" << running_.load();
     return false;
   }
 
@@ -100,36 +105,7 @@ bool ModuleBase::Run() {
 
   stage_ = LifecycleStage::kInit;
   if (!Init()) {
-    stage_ = LifecycleStage::kStopped;
-    running_.store(false);
-    return false;
-  }
-
-  stage_ = LifecycleStage::kRegisterPublications;
-  if (!RegisterPublications()) {
-    stage_ = LifecycleStage::kStopped;
-    running_.store(false);
-    return false;
-  }
-
-  stage_ = LifecycleStage::kRegisterSubscriptions;
-  if (!RegisterSubscriptions()) {
-    stage_ = LifecycleStage::kStopped;
-    running_.store(false);
-    return false;
-  }
-
-  if (runtime_config_.bus_kind == BusKind::kSingleNodeShm) {
-    const auto shm_bus = std::dynamic_pointer_cast<ShmBusRuntime>(bus_);
-    if (shm_bus && !shm_bus->StartUnifiedSubscriberPump()) {
-      stage_ = LifecycleStage::kStopped;
-      running_.store(false);
-      return false;
-    }
-  }
-
-  stage_ = LifecycleStage::kRegisterTimers;
-  if (!RegisterTimers()) {
+    LOG(ERROR) << "ModuleBase::Init failed, module=" << module_name_;
     stage_ = LifecycleStage::kStopped;
     running_.store(false);
     return false;
@@ -152,68 +128,122 @@ void ModuleBase::Stop() {
 }
 
 bool ModuleBase::Init() {
-  return true;
-}
+  if (!DoInit()) {
+    LOG(ERROR) << "ModuleBase::DoInit failed, module=" << module_name_;
+    return false;
+  }
 
-bool ModuleBase::RegisterPublications() {
-  return true;
-}
+  declared_subscription_handlers_.clear();
+  stage_ = LifecycleStage::kSetupSubscriptions;
+  if (!SetupSubscriptions()) {
+    LOG(ERROR) << "ModuleBase::SetupSubscriptions failed, module=" << module_name_;
+    return false;
+  }
+  const auto null_handler = [](const MessageEnvelope&) {};
 
-bool ModuleBase::RegisterSubscriptions() {
-  return true;
-}
+  if (runtime_config_.bus_kind == BusKind::kSingleNodeShm) {
+    auto shm_bus = std::dynamic_pointer_cast<ShmBusRuntime>(bus_);
+    if (!shm_bus) {
+      shm_bus = std::make_shared<ShmBusRuntime>();
+      bus_ = shm_bus;
+    }
 
-bool ModuleBase::RegisterTimers() {
+    if (!runtime_config_.module_config_files.empty()) {
+      std::string topology_error;
+      if (!shm_bus->SetChannelTopologyFromModuleConfigs(
+              runtime_config_.module_config_files,
+              &topology_error)) {
+        LOG(ERROR) << "SetChannelTopologyFromModuleConfigs failed, module=" << module_name_
+                   << " error=" << topology_error;
+        return false;
+      }
+    }
+  }
+
+  config::ModuleChannelConfig module_channel_config;
+  std::string parse_error;
+  if (!runtime_config_.module_channel_config_path.empty()) {
+    if (!config::ParseModuleChannelConfigFile(
+            module_name_,
+            runtime_config_.module_channel_config_path,
+            &module_channel_config,
+            &parse_error)) {
+      LOG(ERROR) << "ParseModuleChannelConfigFile failed, module=" << module_name_
+                 << " path=" << runtime_config_.module_channel_config_path
+                 << " error=" << parse_error;
+      return false;
+    }
+  } else {
+    module_channel_config.module_name = module_name_;
+  }
+
+  for (const auto& endpoint : module_channel_config.input_channels) {
+    auto it = declared_subscription_handlers_.find(endpoint.channel);
+    const auto user_handler =
+        (it != declared_subscription_handlers_.end() && it->second) ? it->second : null_handler;
+    if (!bus_->Subscribe(
+            module_name_,
+            endpoint.channel,
+            [this, user_handler](const MessageEnvelope& message) {
+              callback_queue_.Push([this, user_handler, message]() {
+                EnsureMainThread();
+                user_handler(message);
+              });
+            })) {
+      LOG(ERROR) << "Subscribe failed, module=" << module_name_ << " channel=" << endpoint.channel;
+      return false;
+    }
+  }
+
+  if (runtime_config_.bus_kind == BusKind::kSingleNodeShm) {
+    const auto shm_bus = std::dynamic_pointer_cast<ShmBusRuntime>(bus_);
+    if (shm_bus && !shm_bus->StartUnifiedSubscriberPump()) {
+      LOG(ERROR) << "StartUnifiedSubscriberPump failed, module=" << module_name_;
+      return false;
+    }
+  }
+
   return true;
 }
 
 void ModuleBase::OnRunIteration() {}
 
-bool ModuleBase::AddPublication(const std::string& channel) {
-  if (!RequireStage(LifecycleStage::kRegisterPublications)) {
+bool ModuleBase::SubscribeOneChannel(
+    const std::string& channel,
+    IPubSubBus::MessageHandler handler) {
+  if (!RequireStage(LifecycleStage::kSetupSubscriptions) || channel.empty() || !handler) {
     return false;
   }
-  return bus_->RegisterPublisher(module_name_, channel);
-}
-
-bool ModuleBase::AddSubscription(const std::string& channel, IPubSubBus::MessageHandler handler) {
-  if (!RequireStage(LifecycleStage::kRegisterSubscriptions) || !handler) {
-    return false;
-  }
-
-  return bus_->Subscribe(
-      module_name_,
-      channel,
-      [this, handler = std::move(handler)](const MessageEnvelope& message) {
-        callback_queue_.Push([this, handler, message]() {
-          EnsureMainThread();
-          handler(message);
-        });
-      });
-}
-
-TimerScheduler::TimerId ModuleBase::AddPeriodicTimer(
-    std::chrono::milliseconds interval,
-    std::function<void()> callback) {
-  if (!RequireStage(LifecycleStage::kRegisterTimers) || !callback) {
-    return 0;
-  }
-
-  return timer_scheduler_->RegisterPeriodic(
-      interval,
-      [this, callback = std::move(callback)]() {
-        callback_queue_.Push([this, callback]() {
-          EnsureMainThread();
-          callback();
-        });
-      });
+  declared_subscription_handlers_[channel] = std::move(handler);
+  return true;
 }
 
 bool ModuleBase::Publish(const std::string& channel, ByteBuffer payload) {
-  if (!RequireStage(LifecycleStage::kRunning)) {
+  auto publish_status = PublishWithStatus(channel, std::move(payload));
+  if (!publish_status.ok()) {
+    LOG(WARNING) << "ModuleBase::Publish failed, module=" << module_name_
+                 << " channel=" << channel
+                 << " reason=" << publish_status.status();
     return false;
   }
-  return bus_->Publish(module_name_, channel, std::move(payload));
+  return true;
+}
+
+absl::StatusOr<std::uint64_t> ModuleBase::PublishWithStatus(const std::string& channel, ByteBuffer payload) {
+  if (!RequireStage(LifecycleStage::kRunning)) {
+    return absl::FailedPreconditionError("module is not in running stage");
+  }
+  if (!bus_) {
+    return absl::FailedPreconditionError("bus is null");
+  }
+  auto publish_result = bus_->PublishWithStatus(module_name_, channel, std::move(payload));
+  if (!publish_result.ok()) {
+    LOG(WARNING) << "ModuleBase::PublishWithStatus failed, module=" << module_name_
+                 << " channel=" << channel
+                 << " status=" << publish_result.status();
+    return publish_result.status();
+  }
+  return publish_result;
 }
 
 bool ModuleBase::RequireStage(LifecycleStage expected_stage) const {

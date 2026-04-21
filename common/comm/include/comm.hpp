@@ -5,6 +5,7 @@
 #include "image_pipeline.hpp"
 #include "interfaces.hpp"
 #include "module_base.hpp"
+#include "module_factory_registry.hpp"
 #include "payload_codec.hpp"
 #include "refcounted_message_store.hpp"
 #include "reliability.hpp"

@@ -103,6 +103,7 @@ class ShmBusControlPlane {
   std::unordered_set<std::string> allowed_shm_channel_keys_;
   std::atomic<std::uint64_t> finalize_unlink_invocations_{0};
   std::uint32_t default_consumer_slots_per_channel_ = 10;
+  std::uint32_t shm_slot_count_ = 256;
 };
 
 }  // namespace mould::comm
