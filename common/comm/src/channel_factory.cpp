@@ -53,6 +53,23 @@ std::optional<std::uint32_t> ParsePositiveSlotCount(const char* raw) {
   }
 }
 
+std::optional<std::size_t> ParsePositiveSize(const char* raw) {
+  if (raw == nullptr || raw[0] == '\0') {
+    return std::nullopt;
+  }
+  try {
+    std::size_t consumed = 0;
+    const unsigned long long parsed = std::stoull(raw, &consumed, 10);
+    if (consumed != std::strlen(raw) || parsed == 0 ||
+        parsed > static_cast<unsigned long long>(std::numeric_limits<std::size_t>::max())) {
+      return std::nullopt;
+    }
+    return static_cast<std::size_t>(parsed);
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
 }  // namespace
 
 std::unique_ptr<IPubSubBus> ChannelFactory::Create(BusKind kind) {
@@ -77,6 +94,13 @@ std::unique_ptr<IPubSubBus> ChannelFactory::Create(BusKind kind) {
   } else if (raw_slot_count != nullptr && raw_slot_count[0] != '\0') {
     LOG(WARNING) << "ChannelFactory::Create ignore invalid MOULD_SHM_SLOT_COUNT=" << raw_slot_count
                  << ", fallback to default 256";
+  }
+  const char* raw_slot_payload_bytes = std::getenv("MOULD_SHM_SLOT_PAYLOAD_BYTES");
+  if (const auto slot_payload_bytes = ParsePositiveSize(raw_slot_payload_bytes); slot_payload_bytes.has_value()) {
+    middleware_config.slot_payload_bytes = *slot_payload_bytes;
+  } else if (raw_slot_payload_bytes != nullptr && raw_slot_payload_bytes[0] != '\0') {
+    LOG(WARNING) << "ChannelFactory::Create ignore invalid MOULD_SHM_SLOT_PAYLOAD_BYTES="
+                 << raw_slot_payload_bytes << ", fallback to default 1024";
   }
   const char* fork_token = std::getenv("MOULD_FORK_INHERITANCE_TOKEN");
   const bool post_fork_child = fork_token != nullptr && fork_token[0] != '\0';

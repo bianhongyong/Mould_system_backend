@@ -1,6 +1,6 @@
 #pragma once
 
-#include "payload_codec.hpp"
+#include "interfaces.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -22,9 +22,9 @@ class RefCountedMessageStore {
   explicit RefCountedMessageStore(std::size_t capacity);
 
   std::optional<Handle> Reserve();
-  bool WritePayload(const Handle& handle, PayloadPacket packet);
+  bool WritePayload(const Handle& handle, ByteBuffer payload);
   bool CommitVisible(const Handle& handle, std::uint32_t initial_ref_count);
-  std::optional<PayloadPacket> AcquireVisible(const Handle& handle);
+  std::optional<ByteBuffer> AcquireVisible(const Handle& handle);
   bool Release(const Handle& handle);
   std::size_t SweepExpired(std::chrono::milliseconds max_age);
 
@@ -35,7 +35,7 @@ class RefCountedMessageStore {
     std::atomic<std::uint32_t> ref_count{0};
     std::atomic<bool> visible{false};
     bool reserved = false;
-    PayloadPacket packet;
+    ByteBuffer payload;
     Clock::time_point reserve_ts = Clock::now();
   };
 

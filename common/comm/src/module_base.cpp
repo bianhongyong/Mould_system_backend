@@ -128,11 +128,6 @@ void ModuleBase::Stop() {
 }
 
 bool ModuleBase::Init() {
-  if (!DoInit()) {
-    LOG(ERROR) << "ModuleBase::DoInit failed, module=" << module_name_;
-    return false;
-  }
-
   declared_subscription_handlers_.clear();
   stage_ = LifecycleStage::kSetupSubscriptions;
   if (!SetupSubscriptions()) {
@@ -201,6 +196,11 @@ bool ModuleBase::Init() {
       LOG(ERROR) << "StartUnifiedSubscriberPump failed, module=" << module_name_;
       return false;
     }
+  }
+
+  if (!DoInit()) {
+    LOG(ERROR) << "ModuleBase::DoInit failed, module=" << module_name_;
+    return false;
   }
 
   return true;

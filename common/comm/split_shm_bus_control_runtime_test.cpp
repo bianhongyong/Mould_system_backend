@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <thread>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -90,6 +91,42 @@ bool WaitAtomicUintAtLeast(const std::atomic<std::uint32_t>* c, std::uint32_t wa
     usleep(500);
   }
   return false;
+}
+
+bool WaitAtomicRefUintAtLeast(std::uint32_t* word, std::uint32_t want, int timeout_ms = 180000) {
+  std::atomic_ref<std::uint32_t> r(*word);
+  using clock = std::chrono::steady_clock;
+  const auto deadline = clock::now() + std::chrono::milliseconds(timeout_ms);
+  std::uint32_t last_reported = 0;
+  int report_counter = 0;
+
+  while (clock::now() < deadline) {
+    std::uint32_t current = r.load(std::memory_order_acquire);
+
+    // 每隔一段时间打印一次当前消费进度（便于观察）
+    if (current != last_reported && (report_counter % 50 == 0 || current >= want)) {
+      LOG(INFO) << "WaitAtomicRefUintAtLeast: current=" << current
+                << " want=" << want << " remaining_ms≈"
+                << std::chrono::duration_cast<std::chrono::milliseconds>(
+                       deadline - clock::now()).count();
+      last_reported = current;
+    }
+    report_counter++;
+
+    usleep(200);
+  }
+
+  // 必须等到超时后才返回最终结果
+  const std::uint32_t final = r.load(std::memory_order_acquire);
+  if (final != want) {
+    LOG(ERROR) << "WaitAtomicRefUintAtLeast timeout. Final delivered = " << final
+               << ", expected exactly " << want << " (strict wait until deadline)";
+  } else {
+    LOG(INFO) << "WaitAtomicRefUintAtLeast success. Final delivered = " << final
+              << " (exactly matched after full timeout wait)";
+  }
+
+  return final == want;
 }
 
 using mould::comm::ShmBusRuntimeFinalizeSharedControlPlaneShm;
@@ -206,6 +243,533 @@ bool TestRegistryFrozen_RejectsUnknownChannelKey() {
   return Check(
       !bus.RegisterPublisher("broker", channel + "_unknown_suffix"),
       "unknown channel should fail after registry freeze");
+}
+
+bool TestCompeteDeliveryMode_EndToEndSingleHandlerPerPublish() {
+  mould::comm::MiddlewareConfig config;
+  config.slot_payload_bytes = 64;
+  config.backlog_alarm_threshold = config.slot_payload_bytes;
+  config.default_consumer_slots_per_channel = 2;
+  mould::comm::ShmBusControlPlane control_plane;
+  const std::string channel =
+      "split_ut_compete_" + std::to_string(getpid()) + "_" +
+      std::to_string(
+          static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+
+  mould::config::ChannelTopologyIndex topology;
+  mould::config::ChannelTopologyEntry entry;
+  entry.channel = channel;
+  entry.producers = {"broker"};
+  entry.consumers = {"infer_a", "infer_b"};
+  entry.consumer_count = 2;
+  entry.params["delivery_mode"] = "compete";
+  topology.emplace(entry.channel, entry);
+
+  const std::string posix_name =
+      mould::comm::BuildDeterministicShmName(mould::config::CanonicalShmChannelKey(entry));
+  (void)shm_unlink(posix_name.c_str());
+
+  if (!Check(control_plane.ProvisionChannelTopology(topology, config), "provision compete channel")) {
+    return false;
+  }
+  mould::comm::ShmBusRuntime bus(config);
+  if (!Check(bus.SetChannelTopology(topology), "runtime attach compete")) {
+    return false;
+  }
+  if (!Check(bus.RegisterPublisher("broker", entry.channel), "publisher")) {
+    return false;
+  }
+  std::atomic<int> delivered_a{0};
+  std::atomic<int> delivered_b{0};
+  if (!Check(
+          bus.Subscribe("infer_a", entry.channel, [&](const mould::comm::MessageEnvelope&) {
+            delivered_a.fetch_add(1, std::memory_order_relaxed);
+          }),
+          "subscribe infer_a")) {
+    return false;
+  }
+  if (!Check(
+          bus.Subscribe("infer_b", entry.channel, [&](const mould::comm::MessageEnvelope&) {
+            delivered_b.fetch_add(1, std::memory_order_relaxed);
+          }),
+          "subscribe infer_b")) {
+    return false;
+  }
+  if (!Check(bus.StartUnifiedSubscriberPump(), "pump")) {
+    return false;
+  }
+  constexpr int kMessages = 24;
+  for (int i = 0; i < kMessages; ++i) {
+    std::vector<std::uint8_t> payload{
+        static_cast<std::uint8_t>(i),
+        static_cast<std::uint8_t>(i + 1),
+    };
+    if (!Check(bus.Publish("broker", entry.channel, payload), "publish")) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (std::chrono::steady_clock::now() < deadline) {
+    const int sum =
+        delivered_a.load(std::memory_order_acquire) + delivered_b.load(std::memory_order_acquire);
+    if (sum >= kMessages) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  const int da = delivered_a.load(std::memory_order_acquire);
+  const int db = delivered_b.load(std::memory_order_acquire);
+  if (!Check(da + db == kMessages, "compete: sum of deliveries equals publishes")) {
+    return false;
+  }
+  control_plane.FinalizeUnlinkManagedSegments();
+  return true;
+}
+
+bool TestBroadcastDeliveryMode_TwoConsumersStillFanOut() {
+  mould::comm::MiddlewareConfig config;
+  config.slot_payload_bytes = 64;
+  config.backlog_alarm_threshold = config.slot_payload_bytes;
+  config.default_consumer_slots_per_channel = 2;
+  mould::comm::ShmBusControlPlane control_plane;
+  const std::string channel =
+      "split_ut_bc_" + std::to_string(getpid()) + "_" +
+      std::to_string(
+          static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+
+  mould::config::ChannelTopologyIndex topology;
+  mould::config::ChannelTopologyEntry entry;
+  entry.channel = channel;
+  entry.producers = {"broker"};
+  entry.consumers = {"infer_a", "infer_b"};
+  entry.consumer_count = 2;
+  entry.params["delivery_mode"] = "broadcast";
+  topology.emplace(entry.channel, entry);
+
+  const std::string posix_name =
+      mould::comm::BuildDeterministicShmName(mould::config::CanonicalShmChannelKey(entry));
+  (void)shm_unlink(posix_name.c_str());
+
+  if (!Check(control_plane.ProvisionChannelTopology(topology, config), "provision broadcast channel")) {
+    return false;
+  }
+  mould::comm::ShmBusRuntime bus(config);
+  if (!Check(bus.SetChannelTopology(topology), "runtime attach broadcast")) {
+    return false;
+  }
+  if (!Check(bus.RegisterPublisher("broker", entry.channel), "publisher")) {
+    return false;
+  }
+  std::atomic<int> delivered_a{0};
+  std::atomic<int> delivered_b{0};
+  if (!Check(
+          bus.Subscribe("infer_a", entry.channel, [&](const mould::comm::MessageEnvelope&) {
+            delivered_a.fetch_add(1, std::memory_order_relaxed);
+          }),
+          "subscribe infer_a")) {
+    return false;
+  }
+  if (!Check(
+          bus.Subscribe("infer_b", entry.channel, [&](const mould::comm::MessageEnvelope&) {
+            delivered_b.fetch_add(1, std::memory_order_relaxed);
+          }),
+          "subscribe infer_b")) {
+    return false;
+  }
+  if (!Check(bus.StartUnifiedSubscriberPump(), "pump")) {
+    return false;
+  }
+  constexpr int kMessages = 6;
+  for (int i = 0; i < kMessages; ++i) {
+    std::vector<std::uint8_t> payload{static_cast<std::uint8_t>(i)};
+    if (!Check(bus.Publish("broker", entry.channel, payload), "publish")) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < deadline &&
+         (delivered_a.load(std::memory_order_acquire) < kMessages ||
+          delivered_b.load(std::memory_order_acquire) < kMessages)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  const int da = delivered_a.load(std::memory_order_acquire);
+  const int db = delivered_b.load(std::memory_order_acquire);
+  if (!Check(da == kMessages && db == kMessages, "broadcast: full fan-out")) {
+    return false;
+  }
+  control_plane.FinalizeUnlinkManagedSegments();
+  return true;
+}
+
+bool TestTopologyResolve_DeliveryModeParams() {
+  mould::config::ChannelTopologyEntry entry;
+  entry.params["delivery_mode"] = "compete";
+  if (!Check(
+          mould::config::ResolveShmBusDeliveryModeForChannel(&entry) ==
+              mould::config::ShmBusDeliveryMode::kCompete,
+          "compete resolve")) {
+    return false;
+  }
+  entry.params["delivery_mode"] = "broadcast";
+  return Check(
+      mould::config::ResolveShmBusDeliveryModeForChannel(&entry) ==
+          mould::config::ShmBusDeliveryMode::kBroadcast,
+      "broadcast resolve");
+}
+
+bool TestCompeteMode_StressSameProcessHeavyPublishThroughBus() {
+  mould::comm::MiddlewareConfig config;
+  config.slot_payload_bytes = 64;
+  config.backlog_alarm_threshold = config.slot_payload_bytes;
+  config.default_consumer_slots_per_channel = 2;
+  mould::comm::ShmBusControlPlane control_plane;
+
+  const std::string channel =
+      "split_ut_compstress_sp_" + std::to_string(getpid()) + "_" +
+      std::to_string(static_cast<std::uint64_t>(
+          std::chrono::steady_clock::now().time_since_epoch().count()));
+
+  mould::config::ChannelTopologyIndex topology;
+  mould::config::ChannelTopologyEntry entry;
+  entry.channel = channel;
+  entry.producers = {"broker"};
+  entry.consumers = {"infer_a", "infer_b"};
+  entry.consumer_count = 2;
+  entry.params["delivery_mode"] = "compete";
+  topology.emplace(entry.channel, entry);
+
+  const std::string posix =
+      mould::comm::BuildDeterministicShmName(mould::config::CanonicalShmChannelKey(entry));
+  (void)shm_unlink(posix.c_str());
+
+  if (!Check(control_plane.ProvisionChannelTopology(topology, config), "stress sp compete provision")) {
+    return false;
+  }
+  mould::comm::ShmBusRuntime bus(config);
+  if (!Check(bus.SetChannelTopology(topology), "stress sp attach")) {
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+  if (!Check(bus.RegisterPublisher("broker", entry.channel), "stress sp publisher")) {
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+  std::atomic<int> delivered_a{0};
+  std::atomic<int> delivered_b{0};
+  if (!Check(
+          bus.Subscribe(
+              "infer_a",
+              entry.channel,
+              [&](const mould::comm::MessageEnvelope&) {
+                delivered_a.fetch_add(1, std::memory_order_relaxed);
+              }),
+          "stress sp subscribe a")) {
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+  if (!Check(
+          bus.Subscribe(
+              "infer_b",
+              entry.channel,
+              [&](const mould::comm::MessageEnvelope&) {
+                delivered_b.fetch_add(1, std::memory_order_relaxed);
+              }),
+          "stress sp subscribe b")) {
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+  if (!Check(bus.StartUnifiedSubscriberPump(), "stress sp pump")) {
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+
+  constexpr int kStress = 15000;
+  for (int i = 0; i < kStress; ++i) {
+    std::vector<std::uint8_t> payload{
+        static_cast<std::uint8_t>(i & 0xFF),
+        static_cast<std::uint8_t>((static_cast<unsigned>(i) >> 8U) & 0xFF),
+    };
+    if (!Check(bus.Publish("broker", entry.channel, payload), "stress sp publish burst")) {
+      control_plane.FinalizeUnlinkManagedSegments();
+      return false;
+    }
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(90);
+  while (std::chrono::steady_clock::now() < deadline) {
+    const int sum =
+        delivered_a.load(std::memory_order_acquire) + delivered_b.load(std::memory_order_acquire);
+    if (sum >= kStress) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  const int da = delivered_a.load(std::memory_order_acquire);
+  const int db = delivered_b.load(std::memory_order_acquire);
+  if (!Check(da + db == kStress, "stress sp: deliveries == publishes")) {
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+  control_plane.FinalizeUnlinkManagedSegments();
+  return true;
+}
+
+bool TestCompeteMode_MultiprocessStressTwoConsumersInheritedFds() {
+  mould::comm::MiddlewareConfig cfg;
+  cfg.slot_payload_bytes = 64;
+  cfg.backlog_alarm_threshold = cfg.slot_payload_bytes;
+  cfg.default_consumer_slots_per_channel = 2;
+  mould::comm::ShmBusControlPlane control_plane;
+  // Many messages × multi-process pumps: intentionally remove producer pacing and increase count
+  // so the ring is repeatedly driven to full occupancy under compete mode.
+  constexpr std::uint32_t kStressPublishes = 20000U;
+
+  const std::string channel =
+      "split_ut_compstress_mp_" + std::to_string(getpid()) + "_" +
+      std::to_string(static_cast<std::uint64_t>(
+          std::chrono::steady_clock::now().time_since_epoch().count()));
+
+  mould::config::ChannelTopologyIndex topology;
+  mould::config::ChannelTopologyEntry entry;
+  entry.channel = channel;
+  entry.producers = {"broker"};
+  entry.consumers = {"infer_a", "infer_b"};
+  entry.consumer_count = 2;
+  entry.params["delivery_mode"] = "compete";
+  // Keep ring moderate to make "full ring + reclaim + compete" happen frequently.
+  entry.params["shm_slot_count"] = "128";
+  topology.emplace(channel, entry);
+
+  const std::string posix =
+      mould::comm::BuildDeterministicShmName(mould::config::CanonicalShmChannelKey(entry));
+  (void)shm_unlink(posix.c_str());
+
+  if (!Check(control_plane.ProvisionChannelTopology(topology, cfg), "mp compete stress provision")) {
+    return false;
+  }
+
+  long psz = sysconf(_SC_PAGESIZE);
+  if (psz < static_cast<long>(sizeof(std::uint32_t))) {
+    psz = static_cast<long>(sizeof(std::uint32_t));
+  }
+  void* shared =
+      mmap(nullptr, static_cast<std::size_t>(psz), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (!Check(shared != MAP_FAILED, "mp stress mmap anon")) {
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+  auto* deli = reinterpret_cast<std::uint32_t*>(shared);
+  std::atomic_ref<std::uint32_t>(*deli).store(0, std::memory_order_relaxed);
+
+  int ready_a[2] = {-1, -1};
+  int ready_b[2] = {-1, -1};
+  if (!Check(pipe(ready_a) == 0 && pipe(ready_b) == 0, "ready pipes")) {
+    munmap(shared, static_cast<std::size_t>(psz));
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+  (void)fcntl(ready_a[1], F_SETFD, FD_CLOEXEC);
+  (void)fcntl(ready_b[1], F_SETFD, FD_CLOEXEC);
+
+  const pid_t pid_a = fork();
+  if (!Check(pid_a >= 0, "fork consume a")) {
+    close(ready_a[0]);
+    close(ready_a[1]);
+    close(ready_b[0]);
+    close(ready_b[1]);
+    munmap(shared, static_cast<std::size_t>(psz));
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+
+  if (pid_a == 0) {
+    close(ready_a[0]);
+    close(ready_b[0]);
+    close(ready_b[1]);
+    mould::comm::ShmBusRuntime bus(cfg);
+    const auto handshake_fail = [&]() {
+      const std::uint8_t v = 0;
+      (void)WriteFully(ready_a[1], &v, sizeof(v));
+    };
+    if (!bus.SetChannelTopology(topology)) {
+      handshake_fail();
+      close(ready_a[1]);
+      _exit(41);
+    }
+    if (!bus.Subscribe(
+            "infer_a",
+            channel,
+            [deli](const mould::comm::MessageEnvelope&) {
+              std::atomic_ref<std::uint32_t>(*deli).fetch_add(1, std::memory_order_relaxed);
+            })) {
+      handshake_fail();
+      close(ready_a[1]);
+      _exit(42);
+    }
+    if (!bus.StartUnifiedSubscriberPump()) {
+      handshake_fail();
+      close(ready_a[1]);
+      _exit(43);
+    }
+    const std::uint8_t ok = 1;
+    if (!WriteFully(ready_a[1], &ok, sizeof(ok))) {
+      handshake_fail();
+      close(ready_a[1]);
+      _exit(44);
+    }
+    close(ready_a[1]);
+    for (;;) {
+      sleep(3600);
+    }
+  }
+
+  close(ready_a[1]);
+  std::uint8_t ra = 0;
+  if (!Check(ReadFully(ready_a[0], &ra, sizeof(ra)) && ra == 1, "handshake consumer a")) {
+    (void)kill(pid_a, SIGKILL);
+    (void)waitpid(pid_a, nullptr, 0);
+    close(ready_a[0]);
+    close(ready_b[0]);
+    close(ready_b[1]);
+    munmap(shared, static_cast<std::size_t>(psz));
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+
+  close(ready_a[0]);
+
+  const pid_t pid_b = fork();
+  if (!Check(pid_b >= 0, "fork consume b")) {
+    (void)kill(pid_a, SIGKILL);
+    (void)waitpid(pid_a, nullptr, 0);
+    close(ready_b[0]);
+    close(ready_b[1]);
+    munmap(shared, static_cast<std::size_t>(psz));
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+
+  if (pid_b == 0) {
+    close(ready_a[0]);
+    close(ready_a[1]);
+    close(ready_b[0]);
+    mould::comm::ShmBusRuntime bus(cfg);
+    const auto handshake_fail = [&]() {
+      const std::uint8_t v = 0;
+      (void)WriteFully(ready_b[1], &v, sizeof(v));
+    };
+    if (!bus.SetChannelTopology(topology)) {
+      handshake_fail();
+      close(ready_b[1]);
+      _exit(51);
+    }
+    if (!bus.Subscribe(
+            "infer_b",
+            channel,
+            [deli](const mould::comm::MessageEnvelope&) {
+              std::atomic_ref<std::uint32_t>(*deli).fetch_add(1, std::memory_order_relaxed);
+            })) {
+      handshake_fail();
+      close(ready_b[1]);
+      _exit(52);
+    }
+    if (!bus.StartUnifiedSubscriberPump()) {
+      handshake_fail();
+      close(ready_b[1]);
+      _exit(53);
+    }
+    const std::uint8_t ok = 1;
+    if (!WriteFully(ready_b[1], &ok, sizeof(ok))) {
+      handshake_fail();
+      close(ready_b[1]);
+      _exit(54);
+    }
+    close(ready_b[1]);
+    for (;;) {
+      sleep(3600);
+    }
+  }
+
+  close(ready_b[1]);
+  std::uint8_t rb = 0;
+  if (!Check(ReadFully(ready_b[0], &rb, sizeof(rb)) && rb == 1, "handshake consumer b")) {
+    (void)kill(pid_a, SIGKILL);
+    (void)kill(pid_b, SIGKILL);
+    (void)waitpid(pid_a, nullptr, 0);
+    (void)waitpid(pid_b, nullptr, 0);
+    close(ready_b[0]);
+    munmap(shared, static_cast<std::size_t>(psz));
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+  close(ready_b[0]);
+
+  const pid_t producer = fork();
+  if (!Check(producer >= 0, "fork producer stress")) {
+    (void)kill(pid_a, SIGKILL);
+    (void)kill(pid_b, SIGKILL);
+    (void)waitpid(pid_a, nullptr, 0);
+    (void)waitpid(pid_b, nullptr, 0);
+    munmap(shared, static_cast<std::size_t>(psz));
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+
+  if (producer == 0) {
+    mould::comm::ShmBusRuntime bus(cfg);
+    if (!bus.SetChannelTopology(topology)) {
+      _exit(61);
+    }
+    if (!bus.RegisterPublisher("broker", channel)) {
+      _exit(62);
+    }
+    for (std::uint32_t i = 0; i < kStressPublishes; ++i) {
+      bool published = false;
+      while (!published) {
+        std::vector<std::uint8_t> payload{0xC0, static_cast<std::uint8_t>(i & 0xFF)};
+        published = bus.Publish("broker", channel, payload);
+        ::usleep(100);
+        if (!published) {
+          ::usleep(100);
+          std::this_thread::yield();
+        }
+      }
+    }
+    _exit(0);
+  }
+
+  int pst = 0;
+  if (!Check(waitpid(producer, &pst, 0) == producer && WIFEXITED(pst) && WEXITSTATUS(pst) == 0, "producer")) {
+    (void)kill(pid_a, SIGKILL);
+    (void)kill(pid_b, SIGKILL);
+    (void)waitpid(pid_a, nullptr, 0);
+    (void)waitpid(pid_b, nullptr, 0);
+    munmap(shared, static_cast<std::size_t>(psz));
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+
+  if (!Check(
+          WaitAtomicRefUintAtLeast(deli, kStressPublishes, 18000),
+          "mp stress combined deliveries")) {
+    (void)kill(pid_a, SIGKILL);
+    (void)kill(pid_b, SIGKILL);
+    (void)waitpid(pid_a, nullptr, 0);
+    (void)waitpid(pid_b, nullptr, 0);
+    munmap(shared, static_cast<std::size_t>(psz));
+    control_plane.FinalizeUnlinkManagedSegments();
+    return false;
+  }
+
+  (void)kill(pid_a, SIGTERM);
+  (void)kill(pid_b, SIGTERM);
+  (void)waitpid(pid_a, nullptr, 0);
+  (void)waitpid(pid_b, nullptr, 0);
+  munmap(shared, static_cast<std::size_t>(psz));
+  control_plane.FinalizeUnlinkManagedSegments();
+  return true;
 }
 
 bool TestConsumerCrash_OfflineAndReclaim() {
@@ -325,25 +889,25 @@ bool TestSupervisorTakeConsumerOfflineOnLiveBus() {
   }
   std::uint32_t pid = 0;
   std::uint32_t epoch = 0;
-  const std::size_t queue_depth = cfg.queue_depth;
+  const std::size_t slot_payload_bytes = cfg.slot_payload_bytes;
   if (!Check(
-          control_plane.ReadConsumerOwnerIdentity(channel, &entry, queue_depth, 0, &pid, &epoch),
+          control_plane.ReadConsumerOwnerIdentity(channel, &entry, slot_payload_bytes, 0, &pid, &epoch),
           "read owner tuple")) {
     return false;
   }
   if (!Check(
           !control_plane.TakeConsumerOfflineIfOwner(
-              channel, &entry, queue_depth, 0, pid, static_cast<std::uint32_t>(epoch + 999U)),
+              channel, &entry, slot_payload_bytes, 0, pid, static_cast<std::uint32_t>(epoch + 999U)),
           "wrong epoch should not offline")) {
     return false;
   }
   if (!Check(
-          control_plane.TakeConsumerOfflineIfOwner(channel, &entry, queue_depth, 0, pid, epoch),
+          control_plane.TakeConsumerOfflineIfOwner(channel, &entry, slot_payload_bytes, 0, pid, epoch),
           "supervisor offline")) {
     return false;
   }
   if (!Check(
-          !control_plane.TakeConsumerOfflineIfOwner(channel, &entry, queue_depth, 0, pid, epoch),
+          !control_plane.TakeConsumerOfflineIfOwner(channel, &entry, slot_payload_bytes, 0, pid, epoch),
           "second offline should fail")) {
     return false;
   }
@@ -385,22 +949,22 @@ bool TestControlPlane_TakeAllConsumersOfflineForProcessPid_one_channel() {
           "subscribe")) {
     return false;
   }
-  const std::size_t queue_depth = cfg.queue_depth;
+  const std::size_t slot_payload_bytes = cfg.slot_payload_bytes;
   const std::uint32_t self_pid = static_cast<std::uint32_t>(getpid());
   const std::uint32_t swept =
-      control_plane.TakeAllConsumersOfflineForProcessPid(self_pid, topology, queue_depth);
+      control_plane.TakeAllConsumersOfflineForProcessPid(self_pid, topology, slot_payload_bytes);
   if (!Check(swept == 1, "take-all should offline exactly one slot")) {
     return false;
   }
   const std::uint32_t swept_again =
-      control_plane.TakeAllConsumersOfflineForProcessPid(self_pid, topology, queue_depth);
+      control_plane.TakeAllConsumersOfflineForProcessPid(self_pid, topology, slot_payload_bytes);
   if (!Check(swept_again == 0, "second take-all should be idempotent")) {
     return false;
   }
   std::uint32_t pid = 0;
   std::uint32_t epoch = 0;
   if (!Check(
-          !control_plane.ReadConsumerOwnerIdentity(channel, &entry, queue_depth, 0, &pid, &epoch),
+          !control_plane.ReadConsumerOwnerIdentity(channel, &entry, slot_payload_bytes, 0, &pid, &epoch),
           "consumer should no longer be online")) {
     return false;
   }
@@ -447,35 +1011,35 @@ bool TestControlPlane_TakeAllConsumersOfflineForProcessPid_two_channels() {
   if (!Check(bus.Subscribe("infer", channel_b, noop), "subscribe b")) {
     return false;
   }
-  const std::size_t queue_depth = cfg.queue_depth;
+  const std::size_t slot_payload_bytes = cfg.slot_payload_bytes;
   const std::uint32_t self_pid = static_cast<std::uint32_t>(getpid());
   const std::uint32_t wrong_pid = self_pid + 404040U;
   if (!Check(
-          control_plane.TakeAllConsumersOfflineForProcessPid(wrong_pid, topology, queue_depth) == 0,
+          control_plane.TakeAllConsumersOfflineForProcessPid(wrong_pid, topology, slot_payload_bytes) == 0,
           "wrong pid should not offline any slot")) {
     return false;
   }
   std::uint32_t pid_a = 0;
   std::uint32_t epoch_a = 0;
   if (!Check(
-          control_plane.ReadConsumerOwnerIdentity(channel_a, &entry_a, queue_depth, 0, &pid_a, &epoch_a),
+          control_plane.ReadConsumerOwnerIdentity(channel_a, &entry_a, slot_payload_bytes, 0, &pid_a, &epoch_a),
           "channel a still online after wrong-pid sweep")) {
     return false;
   }
   const std::uint32_t swept =
-      control_plane.TakeAllConsumersOfflineForProcessPid(self_pid, topology, queue_depth);
+      control_plane.TakeAllConsumersOfflineForProcessPid(self_pid, topology, slot_payload_bytes);
   if (!Check(swept == 2, "take-all should offline one slot per channel")) {
     return false;
   }
   if (!Check(
-          !control_plane.ReadConsumerOwnerIdentity(channel_a, &entry_a, queue_depth, 0, &pid_a, &epoch_a),
+          !control_plane.ReadConsumerOwnerIdentity(channel_a, &entry_a, slot_payload_bytes, 0, &pid_a, &epoch_a),
           "channel a offline")) {
     return false;
   }
   std::uint32_t pid_b = 0;
   std::uint32_t epoch_b = 0;
   if (!Check(
-          !control_plane.ReadConsumerOwnerIdentity(channel_b, &entry_b, queue_depth, 0, &pid_b, &epoch_b),
+          !control_plane.ReadConsumerOwnerIdentity(channel_b, &entry_b, slot_payload_bytes, 0, &pid_b, &epoch_b),
           "channel b offline")) {
     return false;
   }
@@ -801,7 +1365,7 @@ bool TestSplitControlParent_DataChild_ProducerLiveConsumerTakenOfflineBySupervis
   entry.consumers = {"infer"};
   entry.consumer_count = 1;
   topology.emplace(channel, entry);
-  const std::size_t queue_depth = cfg.queue_depth;
+  const std::size_t slot_payload_bytes = cfg.slot_payload_bytes;
   (void)shm_unlink(mould::comm::BuildDeterministicShmName(mould::config::CanonicalShmChannelKey(entry)).c_str());
   if (!Check(control_plane.ProvisionChannelTopology(topology, cfg), "provision")) {
     return false;
@@ -935,7 +1499,8 @@ bool TestSplitControlParent_DataChild_ProducerLiveConsumerTakenOfflineBySupervis
     return Check(WIFEXITED(st), "worker should exit after handshake failure");
   }
   const std::uint32_t swept =
-      control_plane.TakeAllConsumersOfflineForProcessPid(static_cast<std::uint32_t>(worker), topology, queue_depth);
+      control_plane.TakeAllConsumersOfflineForProcessPid(
+          static_cast<std::uint32_t>(worker), topology, slot_payload_bytes);
   if (!Check(swept == 1, "supervisor should offline one consumer slot")) {
     const std::uint8_t ack = 1;
     (void)WriteFully(p2w[1], &ack, sizeof(ack));
@@ -1009,8 +1574,8 @@ bool TestLaunchPlanFrozen_ChannelNamingStable() {
   WriteFile(
       root / "io.json",
       std::string(R"({
-  "input_channel": { "infer.results": {"queue_depth": "64"} },
-  "output_channel": { "broker.frames": {"queue_depth_per_consumer": "8"} }
+  "input_channel": { "infer.results": {"slot_payload_bytes": "64"} },
+  "output_channel": { "broker.frames": {"slot_payload_bytes": "8"} }
 })"));
   const std::string plan = std::string(R"({
   "modules": {
@@ -1103,6 +1668,26 @@ TEST(SplitShmBusControlRuntimeTest, AttachOnlyWithoutCreator_FailsTopology) {
 
 TEST(SplitShmBusControlRuntimeTest, LaunchPlanFrozen_ChannelNamingStable) {
   EXPECT_TRUE(TestLaunchPlanFrozen_ChannelNamingStable());
+}
+
+TEST(SplitShmBusControlRuntimeTest, CompeteModeEndToEnd) {
+  EXPECT_TRUE(TestCompeteDeliveryMode_EndToEndSingleHandlerPerPublish());
+}
+
+TEST(SplitShmBusControlRuntimeTest, BroadcastBackwardCompatibility) {
+  EXPECT_TRUE(TestBroadcastDeliveryMode_TwoConsumersStillFanOut());
+}
+
+TEST(SplitShmBusControlRuntimeTest, TopologyParamParsing) {
+  EXPECT_TRUE(TestTopologyResolve_DeliveryModeParams());
+}
+
+TEST(SplitShmBusControlRuntimeTest, CompeteMode_StressSameProcessHeavyPublishThroughBus) {
+  EXPECT_TRUE(TestCompeteMode_StressSameProcessHeavyPublishThroughBus());
+}
+
+TEST(SplitShmBusControlRuntimeTest, MultiConsumerCompeteWithFork) {
+  EXPECT_TRUE(TestCompeteMode_MultiprocessStressTwoConsumersInheritedFds());
 }
 
 TEST(SplitShmBusControlRuntimeSpec, ShmControlPlane_OfflineConsumerSlotsByPidOnly) {

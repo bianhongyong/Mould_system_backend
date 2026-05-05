@@ -11,7 +11,7 @@
 namespace mould::comm {
 
 constexpr std::uint32_t kRingLayoutMagic = 0x52494e47;  // "RING"
-constexpr std::uint16_t kRingLayoutVersion = 7;
+constexpr std::uint16_t kRingLayoutVersion = 8;
 
 enum class SlotState : std::uint32_t {
   kEmpty = 0,
@@ -68,6 +68,10 @@ struct SlotMeta {
   // Atomic control word encoding {state, sequence} for lock-free consistency checks.
   std::atomic<std::uint64_t> state_sequence = 0;
   std::uint32_t payload_size = 0;
+  /// Compete mode: CAS target. 0 = unclaimed, 1 = already claimed by another consumer.
+  /// Reset to 0 when the slot transitions kCommitted -> kEmpty via reclaim.
+  /// Sits in natural padding after payload_size; total size remains 24 bytes.
+  std::atomic<std::uint32_t> claimed{0};
   std::uint64_t payload_offset = 0;
 };
 
@@ -126,6 +130,9 @@ class RingLayoutView {
       std::uint32_t* out_slot_index);
   bool CommitSlot(std::uint32_t slot_index);
   bool TryReadCommitted(std::uint32_t slot_index, RingSlotReservation* out) const;
+  /// Compete-mode claim: CAS `claimed` 0→1. Caller must hold cursor at this slot's sequence
+  /// (i.e. before `CompleteConsumerSlot`) to prevent concurrent reclaim.
+  bool TryClaimSlot(std::uint32_t slot_index);
   /// 按消费者 `read_sequence` 在槽 `(read_sequence - 1) mod slot_count` 上 O(1) 读取已提交消息（环形协议）。
   /// 成功时写入 `out` 与 `out_slot_index`；随后应 `CompleteConsumerSlot(consumer_index, *out_slot_index, out->sequence + 1)`。
   bool TryReadNextForConsumer(

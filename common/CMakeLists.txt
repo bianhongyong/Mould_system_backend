@@ -28,6 +28,12 @@ target_compile_features(common_build_flags INTERFACE cxx_std_20)
 target_link_libraries(common_build_flags INTERFACE thirdparty::deps)
 target_include_directories(common_build_flags INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+set(MOULD_COMM_PROTO_FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/proto/mould/comm/aggregate.proto"
+  "${CMAKE_CURRENT_SOURCE_DIR}/proto/mould/comm/image_meta.proto"
+)
+add_custom_target(mould_comm_proto_schema SOURCES ${MOULD_COMM_PROTO_FILES})
+
 add_subdirectory(config)
 add_subdirectory(comm)
 

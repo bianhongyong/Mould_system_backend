@@ -1,0 +1,64 @@
+{
+  "minloglevel": 1,
+  "communication": {
+    "shm_slot_count": 512
+  },
+  "modules": {
+    "SensorFusionModule": {
+      "module_name": "SensorFusionModule",
+      "resource": {
+        "startup_priority": 10,
+        "cpu_set": "1",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 800
+      },
+      "module_params": {},
+      "io_channels_config_path": "sensor_fusion_io.json"
+    },
+    "RiskEvalModule": {
+      "module_name": "RiskEvalModule",
+      "resource": {
+        "startup_priority": 20,
+        "cpu_set": "2",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 800
+      },
+      "module_params": {},
+      "io_channels_config_path": "risk_eval_io.json"
+    },
+    "PathPlanModule": {
+      "module_name": "PathPlanModule",
+      "resource": {
+        "startup_priority": 30,
+        "cpu_set": "3",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 800
+      },
+      "module_params": {},
+      "io_channels_config_path": "path_plan_io.json"
+    },
+    "ActuatorCoordModule": {
+      "module_name": "ActuatorCoordModule",
+      "resource": {
+        "startup_priority": 40,
+        "cpu_set": "4",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 800
+      },
+      "module_params": {},
+      "io_channels_config_path": "actuator_coord_io.json"
+    }
+  }
+}

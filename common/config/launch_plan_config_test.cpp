@@ -63,10 +63,10 @@ void ResetTestGflags() {
 std::string MinimalIoJson() {
   return R"({
   "input_channel": {
-    "infer.results": {"queue_depth": "64"}
+    "infer.results": {"slot_payload_bytes": "64"}
   },
   "output_channel": {
-    "broker.frames": {"queue_depth_per_consumer": "8"}
+    "broker.frames": {"slot_payload_bytes": "8"}
   }
 })";
 }
@@ -74,7 +74,7 @@ std::string MinimalIoJson() {
 std::string IsolatedIoJson(const char* in_ch, const char* out_ch) {
   std::ostringstream oss;
   oss << R"({
-  "input_channel": {")" << in_ch << R"(": {"queue_depth": "8"}},
+  "input_channel": {")" << in_ch << R"(": {"slot_payload_bytes": "8"}},
   "output_channel": {")" << out_ch << R"(": {}}
 })";
   return oss.str();
@@ -193,7 +193,7 @@ bool TestParseSuccess_CommunicationSlotCount() {
   WriteFile(root / "io.json", MinimalIoJson());
   const std::string plan = R"({
   "communication": {
-    "slot_count": 1024
+    "shm_slot_count": 1024
   },
   "modules": {
     "ModA": {
@@ -210,13 +210,48 @@ bool TestParseSuccess_CommunicationSlotCount() {
   std::string err;
   const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err);
   std::filesystem::remove_all(root);
-  if (!Check(ok, "4.2.2 parse communication slot_count")) {
+  if (!Check(ok, "4.2.2 parse communication shm_slot_count")) {
     return false;
   }
-  if (!Check(out.communication_slot_count.has_value(), "4.2.2 slot_count present")) {
+  if (!Check(out.communication_slot_count.has_value(), "4.2.2 shm_slot_count present")) {
     return false;
   }
-  return Check(*(out.communication_slot_count) == 1024U, "4.2.2 slot_count value");
+  return Check(*(out.communication_slot_count) == 1024U, "4.2.2 shm_slot_count value");
+}
+
+bool TestParseSuccess_CommunicationSlotPayloadBytes() {
+  const fs::path root = MakeUniqueRoot();
+  WriteFile(root / "io.json", MinimalIoJson());
+  const std::string plan = R"({
+  "communication": {
+    "slot_payload_bytes": 4096
+  },
+  "modules": {
+    "ModA": {
+      "module_name": "ModA",
+      "resource": { "mould_test_startup_priority": 10 },
+      "module_params": {},
+      "io_channels_config_path": "io.json"
+    }
+  }
+})";
+  WriteFile(root / "launch_plan.txt", plan);
+
+  mould::config::ParsedLaunchPlan out;
+  std::string err;
+  const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err);
+  std::filesystem::remove_all(root);
+  if (!Check(ok, "4.2.2b parse communication slot_payload_bytes")) {
+    return false;
+  }
+  if (!Check(
+          out.communication_slot_payload_bytes.has_value(),
+          "4.2.2b slot_payload_bytes present")) {
+    return false;
+  }
+  return Check(
+      *(out.communication_slot_payload_bytes) == 4096U,
+      "4.2.2b slot_payload_bytes value");
 }
 
 bool TestParseFails_InvalidCommunicationSlotCount() {
@@ -224,7 +259,7 @@ bool TestParseFails_InvalidCommunicationSlotCount() {
   WriteFile(root / "io.json", MinimalIoJson());
   const std::string plan = R"({
   "communication": {
-    "slot_count": 0
+    "shm_slot_count": 0
   },
   "modules": {
     "ModA": {
@@ -241,10 +276,10 @@ bool TestParseFails_InvalidCommunicationSlotCount() {
   std::string err;
   const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err);
   std::filesystem::remove_all(root);
-  if (!Check(!ok, "4.2.3 parse should fail invalid communication slot_count")) {
+  if (!Check(!ok, "4.2.3 parse should fail invalid communication shm_slot_count")) {
     return false;
   }
-  return Check(err.find("communication.slot_count") != std::string::npos, "4.2.3 error field path");
+  return Check(err.find("communication.shm_slot_count") != std::string::npos, "4.2.3 error field path");
 }
 
 // 4.3 ParseFails_LaunchPlanFileNotFound
@@ -582,11 +617,11 @@ bool TestParseSuccess_ScalarTypesRoundTrip() {
 bool TestAggregateChannels_TwoModulesNoConflict() {
   const fs::path root = MakeUniqueRoot();
   const std::string io_m1 = R"({
-  "input_channel": { "shared.ch": {"queue_depth": "8"} },
+  "input_channel": { "shared.ch": {"slot_payload_bytes": "8"} },
   "output_channel": { "m1.out": {} }
 })";
   const std::string io_m2 = R"({
-  "input_channel": { "m1.out": {"queue_depth": "8"} },
+  "input_channel": { "m1.out": {"slot_payload_bytes": "8"} },
   "output_channel": { "m2.out": {} }
 })";
   WriteFile(root / "m1.json", io_m1);
@@ -625,12 +660,12 @@ bool TestAggregateChannels_TwoModulesNoConflict() {
 bool TestAggregateChannels_FailsOnCrossModuleSameNameInconsistent() {
   const fs::path root = MakeUniqueRoot();
   const std::string io_a = R"({
-  "input_channel": { "dup.ch": {"queue_depth": "1"} },
+  "input_channel": { "dup.ch": {"slot_payload_bytes": "1"} },
   "output_channel": { "a.out": {} }
 })";
   const std::string io_b = R"({
-  "input_channel": { "a.out": {"queue_depth": "1"} },
-  "output_channel": { "dup.ch": {"queue_depth": "2"} }
+  "input_channel": { "a.out": {"slot_payload_bytes": "1"} },
+  "output_channel": { "dup.ch": {"slot_payload_bytes": "2"} }
 })";
   WriteFile(root / "a.json", io_a);
   WriteFile(root / "b.json", io_b);
@@ -1049,6 +1084,7 @@ int main(int argc, char** argv) {
   ok = TestParseSuccess_MultiModule_AllIoReachable() && ok;
   ok = TestParseSuccess_TopLevelMinloglevel() && ok;
   ok = TestParseSuccess_CommunicationSlotCount() && ok;
+  ok = TestParseSuccess_CommunicationSlotPayloadBytes() && ok;
   ok = TestParseFails_InvalidCommunicationSlotCount() && ok;
   ok = TestParseFails_LaunchPlanFileNotFound() && ok;
   ok = TestParseFails_ModuleIoFileNotFound() && ok;

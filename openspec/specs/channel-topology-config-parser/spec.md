@@ -7,7 +7,7 @@ Load per-module `.txt` channel definitions and aggregate topology before shared 
 ## Requirements
 
 ### Requirement: 模块通道定义 SHALL 从 `.txt` 配置文件加载
-每个模块的 `input_channel` 与 `output_channel` SHALL 定义在**该模块独立的 I/O 配置文件**中（与 `launch_plan.txt` 分离）。`launch_plan.txt` 中对应模块子字典 SHALL 包含指向该 I/O 文件的**路径字段**。在共享内存分配前，调用方 SHALL 通过**配置解析器**、以**总配置文件路径**为入口，加载总配置并按各模块路径加载全部 I/O 文件，解析并校验**所有**模块的通道定义，并获得解析器聚合后的全局拓扑数据结构。模块资源字段解析 MUST 同步执行强 schema 校验，且模块名 MUST 与注册工厂名一一对应，否则配置阶段失败。
+每个模块的 `input_channel` 与 `output_channel` SHALL 定义在**该模块独立的 I/O 配置文件**中（与 `launch_plan.txt` 分离）。`launch_plan.txt` 中对应模块子字典 SHALL 包含指向该 I/O 文件的**路径字段**。在共享内存分配前，调用方 SHALL 通过**配置解析器**、以**总配置文件路径**为入口，加载总配置并按各模块路径加载全部 I/O 文件，解析并校验**所有**模块的通道定义，并获得解析器聚合后的全局拓扑数据结构。模块资源字段解析 MUST 同步执行强 schema 校验，且模块名 MUST 与注册工厂名一一对应，否则配置阶段失败。调用接口 MUST 允许直接接收 `registered_module_names`（来自 `ModuleFactoryRegistry::RegisteredNames()`）参与一致性校验。
 
 #### Scenario: 由总配置路径与模块路径加载单模块通道
 - **WHEN** 总配置中模块 `MouldDefectDetector` 子字典包含有效的 I/O 配置文件路径且该文件存在

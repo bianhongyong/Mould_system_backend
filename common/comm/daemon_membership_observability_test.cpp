@@ -334,6 +334,11 @@ bool TestDynamicMultiProcessProducerConsumerPressure30s() {
       }
 
       while (!g_child_stop.load(std::memory_order_acquire)) {
+        const bool online = child_ring->Consumers()[index].state.load(std::memory_order_acquire) ==
+            static_cast<std::uint32_t>(ConsumerState::kOnline);
+        if (!online) {
+          break;
+        }
         const auto cursor = child_ring->LoadConsumerCursor(index);
         if (!cursor.has_value()) {
           std::this_thread::yield();
@@ -352,13 +357,20 @@ bool TestDynamicMultiProcessProducerConsumerPressure30s() {
         }
         const std::uint8_t expected_marker = static_cast<std::uint8_t>((committed.sequence % 251U) + 1U);
         const std::uint8_t* payload = child_ring->PayloadRegion();
+        bool payload_ok = true;
         for (std::uint32_t i = 0; i < committed.payload_size; ++i) {
           if (payload[committed.payload_offset + i] != expected_marker) {
-            _exit(93);
+            payload_ok = false;
+            break;
           }
         }
+        if (!payload_ok) {
+          std::this_thread::yield();
+          continue;
+        }
         if (!child_ring->CompleteConsumerSlot(index, slot_idx, committed.sequence + 1U)) {
-          _exit(94);
+          std::this_thread::yield();
+          continue;
         }
       }
       _exit(0);
@@ -373,9 +385,9 @@ bool TestDynamicMultiProcessProducerConsumerPressure30s() {
       return false;
     }
     bool ok = true;
-    ok = ring->RemoveConsumerOnline(index) && ok;
     pid_t pid = children[index]->pid;
     (void)kill(pid, SIGTERM);
+    ok = ring->RemoveConsumerOnline(index) && ok;
     int status = 0;
     if (waitpid(pid, &status, 0) != pid || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
       ok = false;

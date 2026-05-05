@@ -2,6 +2,7 @@
 
 #include "channel_topology_config.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -74,6 +75,7 @@ struct ParsedLaunchPlan {
   std::filesystem::path launch_plan_path;
   std::optional<std::int64_t> minloglevel;
   std::optional<std::uint32_t> communication_slot_count;
+  std::optional<std::size_t> communication_slot_payload_bytes;
   std::vector<ParsedModuleLaunchEntry> modules;
   ChannelTopologyIndex global_topology;
 };

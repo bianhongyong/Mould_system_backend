@@ -58,7 +58,7 @@ class ShmBusControlPlane {
   bool ReadConsumerOwnerIdentity(
       const std::string& logical_channel,
       const mould::config::ChannelTopologyEntry* topology_entry,
-      std::size_t default_queue_depth,
+      std::size_t default_slot_payload_bytes,
       std::uint32_t consumer_index,
       std::uint32_t* out_owner_pid,
       std::uint32_t* out_owner_epoch);
@@ -68,7 +68,7 @@ class ShmBusControlPlane {
   bool TakeConsumerOfflineIfOwner(
       const std::string& logical_channel,
       const mould::config::ChannelTopologyEntry* topology_entry,
-      std::size_t default_queue_depth,
+      std::size_t default_slot_payload_bytes,
       std::uint32_t consumer_index,
       std::uint32_t owner_pid,
       std::uint32_t owner_epoch);
@@ -79,7 +79,7 @@ class ShmBusControlPlane {
   std::uint32_t TakeAllConsumersOfflineForProcessPid(
       std::uint32_t dead_owner_pid,
       const mould::config::ChannelTopologyIndex& topology,
-      std::size_t default_queue_depth);
+      std::size_t default_slot_payload_bytes);
 
   /// Number of times `FinalizeUnlinkManagedSegments` ran (tests / telemetry).
   std::uint64_t FinalizeUnlinkInvocationCount() const { return finalize_unlink_invocations_.load(); }
@@ -95,7 +95,7 @@ class ShmBusControlPlane {
   std::optional<AttachedChannelRing> AttachChannelRingForSupervisor(
       const std::string& logical_channel,
       const mould::config::ChannelTopologyEntry* topology_entry,
-      std::size_t default_queue_depth);
+      std::size_t default_slot_payload_bytes);
 
   std::mutex mutex_;
   std::unordered_set<std::string> managed_posix_names_;

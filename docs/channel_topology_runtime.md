@@ -22,13 +22,21 @@
 
 参数示例：
 
-- `queue_depth=128`
+- `slot_payload_bytes=128`
+- `delivery_mode=broadcast`（默认）：发布时唤醒所有在线消费者，每条消息每个订阅者各投递一次。
+- `delivery_mode=compete`：发布时唤醒所有在线消费者；消息槽内置原子 `claimed` 标志，消费者通过 CAS 抢占该标志，仅抢到者执行 handler；所有消费者均独立推进游标，无需游标同步。取值不区分大小写；非法值在聚合拓扑时失败。
+
+示例（抢占消费通道）：
+
+```txt
+output inference.tasks delivery_mode=compete shm_consumer_slots=4
+```
 
 支持注释和空行：
 
 ```txt
 # broker 模块通道配置
-output broker.frames queue_depth=128
+output broker.frames slot_payload_bytes=128
 input infer.results
 ```
 
@@ -61,7 +69,7 @@ export MOULD_MODULE_CHANNEL_CONFIGS="broker=/opt/mould/config/broker_channels.tx
 
 - `ChannelEndpointConfig`
   - `channel`：通道名
-  - `params`：该声明携带的参数键值对（例如 `queue_depth`）
+- `params`：该声明携带的参数键值对（例如 `slot_payload_bytes`）
 - `ModuleChannelConfig`
   - `module_name`：模块名
   - `input_channels`：该模块消费的通道列表
@@ -112,9 +120,9 @@ export MOULD_MODULE_CHANNEL_CONFIGS="broker=/opt/mould/config/broker_channels.tx
 
 ### 4) 拓扑驱动容量计算
 
-- 函数：`ComputeQueueDepthForChannel(...)`
+- 函数：`ResolveSlotPayloadBytesForChannel(...)`
 - 优先级：
-  1. 若配置 `queue_depth`，直接使用
-  2. 否则回退默认队列深度
+  1. 若配置 `slot_payload_bytes`，直接使用
+  2. 否则回退默认槽 payload 大小
 
 注意：`consumer_count` 是**按通道独立计算**，不是全局消费者总数。

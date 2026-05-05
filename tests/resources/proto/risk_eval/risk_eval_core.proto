@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package mould.test.riskeval;
+
+message RiskScore {
+  uint64 seq = 1;
+  uint32 score = 2;
+  uint32 congestion = 3;
+  uint32 reliability_gap = 4;
+  string trigger = 5;
+  uint32 epoch = 6;
+  repeated string top_factors = 7;
+}
+
+message DiagnosisAlert {
+  uint64 seq = 1;
+  uint32 level = 2;
+  string cause = 3;
+  uint32 score = 4;
+  string recommendation = 5;
+}
+
+message RiskEvalAuditEvent {
+  uint64 evaluation_count = 1;
+  uint32 quality = 2;
+  uint32 object_count = 3;
+  uint32 ego_speed = 4;
+  uint32 latest_epoch = 5;
+  string stage = 6;
+  uint64 event_ts_us = 7;
+}

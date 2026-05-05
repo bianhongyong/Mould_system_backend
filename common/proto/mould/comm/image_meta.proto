@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package mould.comm;
+
+message ImageMeta {
+  uint32 width = 1;
+  uint32 height = 2;
+  uint32 channels = 3;
+  string format = 4;
+  string checksum_type = 5;
+  string checksum_value = 6;
+}

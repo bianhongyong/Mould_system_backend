@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package mould.test.pathplan;
+
+message TrajectoryPoint {
+  float x = 1;
+  float y = 2;
+  float target_speed = 3;
+  float heading = 4;
+}
+
+message PlanTrajectory {
+  uint64 seq = 1;
+  uint32 lane = 2;
+  uint32 speed_limit = 3;
+  uint32 curvature = 4;
+  string trigger = 5;
+  repeated TrajectoryPoint points = 6;
+}
+
+message CommandHint {
+  uint64 seq = 1;
+  uint32 throttle = 2;
+  uint32 steer = 3;
+  string source = 4;
+  uint32 confidence = 5;
+}
+
+message PathPlanAuditEvent {
+  uint64 plan_count = 1;
+  uint32 latest_risk = 2;
+  uint32 latest_objects = 3;
+  uint32 epoch = 4;
+  string stage = 5;
+  uint64 event_ts_us = 6;
+}

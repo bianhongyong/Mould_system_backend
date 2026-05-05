@@ -1,0 +1,33 @@
+{
+  "input_channel": {
+    "ActuatorCoordAuditEvent": {
+      "slot_payload_bytes": "1048576"
+    },
+    "PlanTrajectory": {
+      "slot_payload_bytes": "1048576"
+    },
+    "RiskScore": {
+      "slot_payload_bytes": "1048576"
+    },
+    "DiagnosisAlert": {
+      "slot_payload_bytes": "1048576"
+    },
+    "ImageFrame": {
+      "slot_payload_bytes": "1048576",
+      "payload_type": "protobuf",
+      "proto_message": "ImageFrame",
+      "delivery_mode": "compete"
+    }
+  },
+  "output_channel": {
+    "ActuatorCommand": {
+      "slot_payload_bytes": "1048576"
+    },
+    "SyncHeartbeat": {
+      "slot_payload_bytes": "1048576"
+    },
+    "ActuatorCoordAuditEvent": {
+      "slot_payload_bytes": "1048576"
+    }
+  }
+}

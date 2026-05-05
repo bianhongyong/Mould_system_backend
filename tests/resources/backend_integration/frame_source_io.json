@@ -2,7 +2,7 @@
   "input_channel": {},
   "output_channel": {
     "frame.raw": {
-      "queue_depth_per_consumer": "32"
+      "slot_payload_bytes": "32"
     }
   }
 }

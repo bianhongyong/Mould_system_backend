@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package mould.common.image;
+
+enum ImageEncoding {
+  IMAGE_ENCODING_UNSPECIFIED = 0;
+  IMAGE_ENCODING_JPEG = 1;
+  IMAGE_ENCODING_PNG = 2;
+  IMAGE_ENCODING_NV12 = 3;
+  IMAGE_ENCODING_RAW = 4;
+}
+
+message ImageFrame {
+  uint64 frame_seq = 1;
+  uint64 capture_ts_us = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+  uint32 channels = 5;
+  string format = 6;
+  ImageEncoding encoding = 7;
+  string checksum_type = 8;
+  string checksum_value = 9;
+  bool lamination_detect_flag = 10;
+  bytes image_bytes = 11;
+}

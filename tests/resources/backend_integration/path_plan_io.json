@@ -1,0 +1,36 @@
+{
+  "input_channel": {
+    "CommandHint": {
+      "slot_payload_bytes": "1048576"
+    },
+    "PathPlanAuditEvent": {
+      "slot_payload_bytes": "1048576"
+    },
+    "PerceptionTrack": {
+      "slot_payload_bytes": "1048576"
+    },
+    "RiskScore": {
+      "slot_payload_bytes": "1048576"
+    },
+    "SyncHeartbeat": {
+      "slot_payload_bytes": "1048576"
+    },
+    "ImageFrame": {
+      "slot_payload_bytes": "1048576",
+      "payload_type": "protobuf",
+      "proto_message": "ImageFrame",
+      "delivery_mode": "compete"
+    }
+  },
+  "output_channel": {
+    "PlanTrajectory": {
+      "slot_payload_bytes": "1048576"
+    },
+    "CommandHint": {
+      "slot_payload_bytes": "1048576"
+    },
+    "PathPlanAuditEvent": {
+      "slot_payload_bytes": "1048576"
+    }
+  }
+}

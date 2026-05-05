@@ -1,7 +1,7 @@
 {
   "input_channel": {
     "feature.vec.replica": {
-      "queue_depth": "32"
+      "slot_payload_bytes": "32"
     }
   },
   "output_channel": {}

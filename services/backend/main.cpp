@@ -1,3 +1,4 @@
+#include "channel_topology_config.hpp"
 #include "launch_plan_config.hpp"
 #include "ms_logging.hpp"
 #include "module_factory_registry.hpp"
@@ -244,6 +245,15 @@ bool SetupRuntimeEnvironmentFromLaunchPlan(
     }
     return false;
   }
+  const std::size_t configured_slot_payload_bytes =
+      launch_plan.communication_slot_payload_bytes.value_or(1024U);
+  const std::string slot_payload_bytes_value = std::to_string(configured_slot_payload_bytes);
+  if (setenv("MOULD_SHM_SLOT_PAYLOAD_BYTES", slot_payload_bytes_value.c_str(), 1) != 0) {
+    if (out_error != nullptr) {
+      *out_error = "setenv MOULD_SHM_SLOT_PAYLOAD_BYTES failed, errno=" + std::to_string(errno);
+    }
+    return false;
+  }
   return true;
 }
 
@@ -305,6 +315,7 @@ int main(int argc, char** argv) {
   mould::comm::ShmBusControlPlane control_plane;
   mould::comm::MiddlewareConfig middleware_config;
   middleware_config.shm_slot_count = launch_plan.communication_slot_count.value_or(256U);
+  middleware_config.slot_payload_bytes = launch_plan.communication_slot_payload_bytes.value_or(1024U);
   if (!control_plane.ProvisionChannelTopologyFromModuleConfigs(
           module_config_files, &env_error, middleware_config)) {
     LOG(ERROR) << "[backend_main] control plane provisioning failed: " << env_error;
@@ -312,6 +323,14 @@ int main(int argc, char** argv) {
     return 9;
   }
   LOG(INFO) << "[backend_main] control plane provisioning success";
+
+  mould::config::ChannelTopologyIndex supervisor_channel_topology;
+  if (!mould::config::BuildChannelTopologyIndexFromFiles(
+          module_config_files, &supervisor_channel_topology, &env_error)) {
+    LOG(ERROR) << "[backend_main] failed to build channel topology for supervisor SHM hooks: " << env_error;
+    mould::ShutdownApplicationLogging();
+    return 10;
+  }
 
   mould::comm::Supervisor supervisor(static_cast<std::uint32_t>(std::random_device{}()));
   std::string supervisor_error;
@@ -378,6 +397,14 @@ int main(int argc, char** argv) {
     }
     const std::string module_name = module_it->second;
     pid_to_module.erase(module_it);
+    // SIGKILL / crash: child cannot run ShmBus teardown; stale kOnline consumer slots in POSIX SHM
+    // would pin MinActiveReadSequence and block reclaim on every channel this module subscribed to.
+    const std::uint32_t shm_offline_count = control_plane.TakeAllConsumersOfflineForProcessPid(
+        static_cast<std::uint32_t>(pid),
+        supervisor_channel_topology,
+        middleware_config.slot_payload_bytes);
+    LOG(INFO) << "[backend_main] shm consumers taken offline for exited pid=" << pid
+              << " module=" << module_name << " count=" << shm_offline_count;
     (void)supervisor.ReapChildProcess(pid);
     LOG(ERROR ) << "[backend_main] child exited module=" << module_name << " pid=" << pid
                  << " raw_status=" << status;
@@ -430,6 +457,10 @@ int main(int argc, char** argv) {
       continue;
     }
     LOG(INFO) << "[backend_main] reaped pid during graceful window pid=" << pid;
+    (void)control_plane.TakeAllConsumersOfflineForProcessPid(
+        static_cast<std::uint32_t>(pid),
+        supervisor_channel_topology,
+        middleware_config.slot_payload_bytes);
     (void)supervisor.ReapChildProcess(pid);
   }
 
@@ -440,6 +471,10 @@ int main(int argc, char** argv) {
                    << " pid=" << *pid;
       kill(*pid, SIGKILL);
       (void)waitpid(*pid, nullptr, 0);
+      (void)control_plane.TakeAllConsumersOfflineForProcessPid(
+          static_cast<std::uint32_t>(*pid),
+          supervisor_channel_topology,
+          middleware_config.slot_payload_bytes);
       (void)supervisor.ReapChildProcess(*pid);
     }
   }

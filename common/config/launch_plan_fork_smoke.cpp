@@ -42,10 +42,10 @@ int main(int argc, char** argv) {
 
   const std::string io_json = R"({
   "input_channel": {
-    "infer.results": {"queue_depth": "64"}
+    "infer.results": {"slot_payload_bytes": "64"}
   },
   "output_channel": {
-    "broker.frames": {"queue_depth_per_consumer": "8"}
+    "broker.frames": {"slot_payload_bytes": "8"}
   }
 })";
   WriteFile(root / "channels" / "smoke_io.json", io_json);

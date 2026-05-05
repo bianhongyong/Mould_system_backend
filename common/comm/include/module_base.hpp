@@ -59,9 +59,8 @@ class ModuleBase {
 
   bool Run();
   void Stop();
-
+  bool Init();
  protected:
-  virtual bool Init();
   virtual bool DoInit() = 0;
   virtual bool SetupSubscriptions() = 0;
   virtual void OnRunIteration();

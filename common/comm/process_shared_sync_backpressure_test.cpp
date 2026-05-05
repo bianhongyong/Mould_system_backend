@@ -78,8 +78,8 @@ bool WriteFully(int fd, const void* data, std::size_t length) {
 
 bool TestNotificationFanoutToAllOnlineConsumers() {
   MiddlewareConfig config;
-  config.queue_depth = 64;
-  config.backlog_alarm_threshold = config.queue_depth;
+  config.slot_payload_bytes = 64;
+  config.backlog_alarm_threshold = config.slot_payload_bytes;
   // Match ring consumer capacity to topology `consumer_count` (2); default floor 10 would allow a
   // third subscriber and break the over-subscription assertion below.
   config.default_consumer_slots_per_channel = 2;
@@ -156,8 +156,8 @@ bool TestNotificationFanoutToAllOnlineConsumers() {
 
 bool TestReactorConsumesFromSharedMemoryBySequence() {
   MiddlewareConfig config;
-  config.queue_depth = 32;
-  config.backlog_alarm_threshold = config.queue_depth;
+  config.slot_payload_bytes = 32;
+  config.backlog_alarm_threshold = config.slot_payload_bytes;
   ShmBusControlPlane control_plane;
   ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
@@ -222,8 +222,8 @@ bool TestReactorConsumesFromSharedMemoryBySequence() {
 
 bool TestPublishWaitObservabilityLogContainsRequiredFields() {
   MiddlewareConfig config;
-  config.queue_depth = 32;
-  config.backlog_alarm_threshold = config.queue_depth;
+  config.slot_payload_bytes = 32;
+  config.backlog_alarm_threshold = config.slot_payload_bytes;
   ShmBusControlPlane control_plane;
   ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
@@ -274,8 +274,8 @@ bool TestPublishWaitObservabilityLogContainsRequiredFields() {
 
 bool TestForkedConsumerBindsInheritedEventFdMapping() {
   MiddlewareConfig config;
-  config.queue_depth = 32;
-  config.backlog_alarm_threshold = config.queue_depth;
+  config.slot_payload_bytes = 32;
+  config.backlog_alarm_threshold = config.slot_payload_bytes;
   ShmBusControlPlane control_plane;
   ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
@@ -374,8 +374,8 @@ bool TestForkedConsumerBindsInheritedEventFdMapping() {
 
 bool TestSlowConsumerBackpressureProducesNonZeroWait() {
   MiddlewareConfig config;
-  config.queue_depth = 3;
-  config.backlog_alarm_threshold = config.queue_depth;
+  config.slot_payload_bytes = 3;
+  config.backlog_alarm_threshold = config.slot_payload_bytes;
   ShmBusControlPlane control_plane;
   ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
@@ -463,8 +463,8 @@ bool TestSingleProducerMultiProcessConsumersMessageCorrectness() {
   constexpr std::uint32_t kMessages = 300;
 
   MiddlewareConfig config;
-  config.queue_depth = 16;
-  config.backlog_alarm_threshold = config.queue_depth;
+  config.slot_payload_bytes = 16;
+  config.backlog_alarm_threshold = config.slot_payload_bytes;
   ShmBusControlPlane control_plane;
   ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
 
@@ -613,8 +613,8 @@ bool TestPumpDoesNotFastForwardLaggedCursorOnSequenceMismatch() {
   constexpr std::uint32_t kPreSubscribePublishes = 300;
 
   MiddlewareConfig config;
-  config.queue_depth = 16;
-  config.backlog_alarm_threshold = config.queue_depth;
+  config.slot_payload_bytes = 16;
+  config.backlog_alarm_threshold = config.slot_payload_bytes;
   config.default_consumer_slots_per_channel = 1;
   ShmBusControlPlane control_plane;
   ScopedControlPlaneShmCleanup shm_cleanup{control_plane};
@@ -662,12 +662,13 @@ bool TestPumpDoesNotFastForwardLaggedCursorOnSequenceMismatch() {
     return false;
   }
 
-  const std::size_t queue_depth = mould::config::ComputeQueueDepthForChannel(&entry, config.queue_depth);
+  const std::size_t slot_payload_bytes =
+      mould::config::ResolveSlotPayloadBytesForChannel(&entry, config.slot_payload_bytes);
   const std::uint32_t consumer_capacity =
       mould::config::ResolveShmRingConsumerCapacity(&entry, config.default_consumer_slots_per_channel);
   mould::comm::ShmSegmentLayout layout;
   layout.payload_capacity =
-      mould::comm::ComputeRingLayoutSizeBytes(kSlotCount, consumer_capacity) + queue_depth * kSlotCount;
+      mould::comm::ComputeRingLayoutSizeBytes(kSlotCount, consumer_capacity) + slot_payload_bytes * kSlotCount;
   const std::string shm_channel_key = mould::config::CanonicalShmChannelKey(entry);
   auto segment = mould::comm::ShmSegment::Attach(shm_channel_key, layout);
   if (!Check(segment.has_value(), "test helper should attach channel segment")) {

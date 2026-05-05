@@ -1,7 +1,7 @@
 {
   "minloglevel": 1,
   "communication": {
-    "slot_count": 256
+    "shm_slot_count": 256
   },
   "modules": {
     "FrameSourceModule": {

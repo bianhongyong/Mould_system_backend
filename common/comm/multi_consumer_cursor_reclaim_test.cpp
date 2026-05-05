@@ -1,8 +1,11 @@
 #include "ms_logging.hpp"
+#include "channel_topology_config.hpp"
 #include "shm_bus_runtime.hpp"
 #include "shm_ring_buffer.hpp"
 #include "shm_segment.hpp"
 #include "test_helpers.hpp"
+
+#include <gtest/gtest.h>
 
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -18,6 +21,17 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+class MultiConsumerCursorReclaimGlogEnvironment : public ::testing::Environment {
+ public:
+  void SetUp() override {
+    mould::InitApplicationLogging("multi_consumer_cursor_reclaim_test");
+  }
+  void TearDown() override { mould::ShutdownApplicationLogging(); }
+};
+
+const auto* const k_multi_consumer_cursor_reclaim_glog_env =
+    ::testing::AddGlobalTestEnvironment(new MultiConsumerCursorReclaimGlogEnvironment());
 
 namespace {
 
@@ -1086,9 +1100,7 @@ bool TestDedupKeyRejectsInvalidInputs() {
 
 }  // namespace
 
-int main(int argc, char* argv[]) {
-  (void)argc;
-  mould::InitApplicationLogging(argv[0]);
+static int RunLegacyMultiConsumerCursorReclaimSuite() {
   bool ok = true;
   ok = TestConsumerCursorRegisterAdvanceAndPersistCrossProcess() && ok;
   ok = TestReclaimUsesMinActiveCursorCrossProcess() && ok;
@@ -1100,12 +1112,82 @@ int main(int argc, char* argv[]) {
   ok = TestBackpressureResumeWithSlowConsumerCrossProcess() && ok;
   ok = TestDedupKeyUsesChannelAndSequence() && ok;
   ok = TestDedupKeyRejectsInvalidInputs() && ok;
-  if (!ok) {
-    LOG(ERROR) << "module4 multi-consumer cursor/reclaim tests failed";
-    mould::ShutdownApplicationLogging();
-    return 1;
-  }
-  LOG(INFO) << "module4 multi-consumer cursor/reclaim tests passed";
-  mould::ShutdownApplicationLogging();
-  return 0;
+  return ok ? 0 : 1;
+}
+
+TEST(MultiConsumerCursorReclaim, LegacyHistoricalCrossProcessSuite) {
+  EXPECT_EQ(RunLegacyMultiConsumerCursorReclaimSuite(), 0);
+}
+
+TEST(CompeteDeliveryModeConfig, ResolveDeliveryModeAndValidation) {
+  using mould::config::ChannelTopologyEntry;
+  using mould::config::IsValidShmBusDeliveryModeParamValue;
+  using mould::config::ResolveShmBusDeliveryModeForChannel;
+  using mould::config::ShmBusDeliveryMode;
+
+  ChannelTopologyEntry e;
+  EXPECT_EQ(ResolveShmBusDeliveryModeForChannel(&e), ShmBusDeliveryMode::kBroadcast);
+  e.params["delivery_mode"] = "CoMpEtE";
+  EXPECT_EQ(ResolveShmBusDeliveryModeForChannel(&e), ShmBusDeliveryMode::kCompete);
+  EXPECT_TRUE(IsValidShmBusDeliveryModeParamValue(""));
+  EXPECT_TRUE(IsValidShmBusDeliveryModeParamValue("broadcast"));
+  EXPECT_FALSE(IsValidShmBusDeliveryModeParamValue("invalid_mode"));
+}
+
+TEST(CompeteDeliveryMode, ErrorHandlingAndFallback) {
+  constexpr std::uint32_t slot_count = 4;
+  constexpr std::uint32_t consumer_capacity = 2;
+  const std::size_t layout_bytes = mould::comm::ComputeRingLayoutSizeBytes(slot_count, consumer_capacity);
+  std::vector<std::uint8_t> backing(layout_bytes + 256, 0);
+  auto ring = mould::comm::RingLayoutView::Initialize(
+      backing.data(), backing.size(), slot_count, consumer_capacity, 256);
+  ASSERT_TRUE(ring.has_value());
+  ASSERT_TRUE(ring->RegisterConsumer(0, 1));
+
+  // TryClaimSlot with invalid slot_index returns false.
+  EXPECT_FALSE(ring->TryClaimSlot(slot_count));
+  EXPECT_FALSE(ring->TryClaimSlot(slot_count + 100));
+
+  // Publish one message.
+  RingSlotReservation res{};
+  std::uint32_t si = 0;
+  ASSERT_TRUE(ring->ReservePublishSlotRingOrdered(8, &res, &si));
+  ASSERT_TRUE(ring->CommitSlot(si));
+
+  // First claim succeeds.
+  EXPECT_TRUE(ring->TryClaimSlot(si));
+  // Second claim on same slot fails (already claimed).
+  EXPECT_FALSE(ring->TryClaimSlot(si));
+
+  // After claim (regardless of handler outcome), CompleteConsumerSlot advances cursor.
+  ASSERT_TRUE(ring->CompleteConsumerSlot(0, si, 2));
+  auto cursor = ring->LoadConsumerCursor(0);
+  ASSERT_TRUE(cursor.has_value());
+  EXPECT_EQ(*cursor, 2U);
+}
+
+TEST(CompeteDeliveryMode, CursorSynchronizationAfterConsume) {
+  constexpr std::uint32_t slot_count = 4;
+  constexpr std::uint32_t consumer_capacity = 2;
+  const std::size_t layout_bytes = mould::comm::ComputeRingLayoutSizeBytes(slot_count, consumer_capacity);
+  std::vector<std::uint8_t> backing(layout_bytes + 256, 0);
+  auto ring = mould::comm::RingLayoutView::Initialize(backing.data(), backing.size(), slot_count, consumer_capacity, 256);
+  ASSERT_TRUE(ring.has_value());
+  ASSERT_TRUE(ring->RegisterConsumer(0, 1));
+  ASSERT_TRUE(ring->RegisterConsumer(1, 1));
+
+  RingSlotReservation res{};
+  std::uint32_t si = 0;
+  ASSERT_TRUE(ring->ReservePublishSlotRingOrdered(8, &res, &si));
+  ASSERT_TRUE(ring->CommitSlot(si));
+
+  ASSERT_TRUE(ring->CompleteConsumerSlot(0, si, 2));
+  ASSERT_TRUE(ring->AdvanceConsumerCursor(1, 2));
+
+  EXPECT_EQ(ring->ReclaimCommittedSlots(), 1U);
+}
+
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }

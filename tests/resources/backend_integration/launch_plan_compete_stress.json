@@ -1,0 +1,64 @@
+{
+  "minloglevel": 1,
+  "communication": {
+    "shm_slot_count": 8192
+  },
+  "modules": {
+    "CompeteStressConsumerA": {
+      "module_name": "CompeteStressConsumerA",
+      "resource": {
+        "startup_priority": 10,
+        "cpu_set": "0",
+        "restart_backoff_ms": 100,
+        "restart_max_retries": 2,
+        "restart_window_ms": 5000,
+        "restart_fuse_ms": 30000,
+        "ready_timeout_ms": 2000
+      },
+      "module_params": {},
+      "io_channels_config_path": "compete_stress_consumer_io.json"
+    },
+    "CompeteStressConsumerB": {
+      "module_name": "CompeteStressConsumerB",
+      "resource": {
+        "startup_priority": 11,
+        "cpu_set": "0",
+        "restart_backoff_ms": 100,
+        "restart_max_retries": 2,
+        "restart_window_ms": 5000,
+        "restart_fuse_ms": 30000,
+        "ready_timeout_ms": 2000
+      },
+      "module_params": {},
+      "io_channels_config_path": "compete_stress_consumer_io.json"
+    },
+    "CompeteStressConsumerC": {
+      "module_name": "CompeteStressConsumerC",
+      "resource": {
+        "startup_priority": 12,
+        "cpu_set": "0",
+        "restart_backoff_ms": 100,
+        "restart_max_retries": 2,
+        "restart_window_ms": 5000,
+        "restart_fuse_ms": 30000,
+        "ready_timeout_ms": 2000
+      },
+      "module_params": {},
+      "io_channels_config_path": "compete_stress_consumer_io.json"
+    },
+    "CompeteStressProducer": {
+      "module_name": "CompeteStressProducer",
+      "resource": {
+        "startup_priority": 40,
+        "cpu_set": "0",
+        "restart_backoff_ms": 100,
+        "restart_max_retries": 2,
+        "restart_window_ms": 5000,
+        "restart_fuse_ms": 30000,
+        "ready_timeout_ms": 2000
+      },
+      "module_params": {},
+      "io_channels_config_path": "compete_stress_producer_io.json"
+    }
+  }
+}

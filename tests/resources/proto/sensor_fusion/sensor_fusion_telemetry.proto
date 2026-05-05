@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package mould.test.sensorfusion;
+
+message ImuSample {
+  double acc_x = 1;
+  double acc_y = 2;
+  double acc_z = 3;
+  double gyro_x = 4;
+  double gyro_y = 5;
+  double gyro_z = 6;
+  uint64 sample_ts_us = 7;
+}
+
+message TelemetryIngress {
+  uint64 seq = 1;
+  float quality = 2;
+  float stability = 3;
+  float throttle_feedback = 4;
+  int32 coordinator_epoch = 5;
+  repeated ImuSample imu_window = 6;
+  map<string, float> thermal_zone_temp = 7;
+}
+
+message PerceptionTrack {
+  message ObjectTrack {
+    uint64 track_id = 1;
+    string type = 2;
+    float confidence = 3;
+    float x = 4;
+    float y = 5;
+    float vx = 6;
+    float vy = 7;
+  }
+  uint64 seq = 1;
+  uint32 object_count = 2;
+  float ego_speed = 3;
+  uint32 risk_hint = 4;
+  repeated ObjectTrack tracks = 5;
+}
+
+message SensorFusionAuditEvent {
+  uint64 seq = 1;
+  string stage = 2;
+  uint32 observed_command_count = 3;
+  uint32 observed_heartbeat_count = 4;
+  uint32 last_alert_level = 5;
+  string module_name = 6;
+  uint64 event_ts_us = 7;
+}

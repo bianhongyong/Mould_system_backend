@@ -1,0 +1,10 @@
+{
+  "input_channel": {},
+  "output_channel": {
+    "CompeteStress": {
+      "slot_payload_bytes": "256",
+      "delivery_mode": "compete",
+      "shm_consumer_slots": "4"
+    }
+  }
+}

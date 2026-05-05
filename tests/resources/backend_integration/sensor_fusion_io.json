@@ -1,0 +1,33 @@
+{
+  "input_channel": {
+    "SensorFusionAuditEvent": {
+      "slot_payload_bytes": "1048576"
+    },
+    "ActuatorCommand": {
+      "slot_payload_bytes": "1048576"
+    },
+    "SyncHeartbeat": {
+      "slot_payload_bytes": "1048576"
+    },
+    "DiagnosisAlert": {
+      "slot_payload_bytes": "1048576"
+    }
+  },
+  "output_channel": {
+    "TelemetryIngress": {
+      "slot_payload_bytes": "1048576"
+    },
+    "PerceptionTrack": {
+      "slot_payload_bytes": "1048576"
+    },
+    "SensorFusionAuditEvent": {
+      "slot_payload_bytes": "1048576"
+    },
+    "ImageFrame": {
+      "slot_payload_bytes": "1048576",
+      "payload_type": "protobuf",
+      "proto_message": "ImageFrame",
+      "delivery_mode": "compete"
+    }
+  }
+}

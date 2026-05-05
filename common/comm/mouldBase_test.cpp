@@ -76,7 +76,7 @@ class TestModuleBase : public ModuleBase {
 std::string WriteTempModuleChannelConfig(const std::string& contents) {
   const auto dir = std::filesystem::temp_directory_path();
   const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
-  const auto path = dir / std::filesystem::path("mould_base_test_" + std::to_string(unique) + ".cfg");
+  const auto path = dir / std::filesystem::path("mould_base_test_" + std::to_string(unique) + ".json");
   std::ofstream output(path);
   output << contents;
   output.close();
@@ -99,7 +99,7 @@ TEST_F(MouldBaseTest, RunFailsWhenDoInitFails) {
   TestModuleBase module("mod_a", std::move(context), false, {});
   EXPECT_FALSE(module.Run());
   EXPECT_TRUE(module.do_init_called);
-  EXPECT_FALSE(module.setup_subscriptions_called);
+  EXPECT_TRUE(module.setup_subscriptions_called);
 }
 
 TEST_F(MouldBaseTest, SubscribeUsesConfiguredInputChannelsEvenWithoutUserHandler) {
@@ -107,16 +107,22 @@ TEST_F(MouldBaseTest, SubscribeUsesConfiguredInputChannelsEvenWithoutUserHandler
   ShmBusControlPlane control_plane;
 
   const std::string self_cfg_path = WriteTempModuleChannelConfig(
-      "input ch_a\n"
-      "input ch_b\n"
-      "output ch_out\n");
-  const std::string pub_cfg_path = WriteTempModuleChannelConfig("output ch_a\noutput ch_b\n");
+      R"({
+  "input_channel": {"ch_a": {}, "ch_b": {}},
+  "output_channel": {"ch_out": {}}
+})");
+  const std::string pub_cfg_path = WriteTempModuleChannelConfig(
+      R"({
+  "input_channel": {},
+  "output_channel": {"ch_a": {}, "ch_b": {}}
+})");
   std::vector<std::pair<std::string, std::string>> module_cfgs{
       {"mod_b", self_cfg_path},
       {"publisher", pub_cfg_path},
   };
   std::string provision_error;
-  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error));
+  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error))
+      << provision_error;
 
   ModuleRuntimeContext context;
   context.config.bus_kind = BusKind::kSingleNodeShm;
@@ -141,11 +147,14 @@ TEST_F(MouldBaseTest, SubscriptionHandlerFromBusinessIsInvoked) {
   ShmBusControlPlane control_plane;
 
   const std::string self_cfg_path = WriteTempModuleChannelConfig(
-      "input ch_business\n"
-      "output ch_business\n");
+      R"({
+  "input_channel": {"ch_business": {}},
+  "output_channel": {"ch_business": {}}
+})");
   std::vector<std::pair<std::string, std::string>> module_cfgs{{"mod_c", self_cfg_path}};
   std::string provision_error;
-  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error));
+  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error))
+      << provision_error;
   std::atomic<int> callback_count{0};
   std::unordered_map<std::string, IPubSubBus::MessageHandler> handlers;
   handlers.emplace("ch_business", [&callback_count](const MessageEnvelope&) { ++callback_count; });
@@ -170,19 +179,23 @@ TEST_F(MouldBaseTest, RunFailsWhenModuleChannelConfigFileMissing) {
   auto bus = std::make_shared<ShmBusRuntime>();
   ModuleRuntimeContext context;
   context.config.bus_kind = BusKind::kSingleNodeShm;
-  context.config.module_channel_config_path = "/tmp/not_exists_mould_base.cfg";
+  context.config.module_channel_config_path = "/tmp/not_exists_mould_base.json";
   context.shared_bus = bus;
 
   TestModuleBase module("mod_d", std::move(context), true, {});
   EXPECT_FALSE(module.Run());
-  EXPECT_TRUE(module.do_init_called);
+  EXPECT_FALSE(module.do_init_called);
   EXPECT_TRUE(module.setup_subscriptions_called);
 }
 
 TEST_F(MouldBaseTest, RunFailsWhenSubscribeWithoutTopologyProvision) {
   auto bus = std::make_shared<ShmBusRuntime>();
 
-  const std::string cfg_path = WriteTempModuleChannelConfig("input ch_sub_fail\n");
+  const std::string cfg_path = WriteTempModuleChannelConfig(
+      R"({
+  "input_channel": {"ch_sub_fail": {}},
+  "output_channel": {}
+})");
   ModuleRuntimeContext context;
   context.config.bus_kind = BusKind::kSingleNodeShm;
   context.config.module_channel_config_path = cfg_path;
@@ -210,11 +223,14 @@ TEST_F(MouldBaseTest, RunSucceedsWhenConfigHasOnlyOutputChannels) {
   auto bus = std::make_shared<ShmBusRuntime>();
   ShmBusControlPlane control_plane;
   const std::string cfg_path = WriteTempModuleChannelConfig(
-      "output ch_out_a\n"
-      "output ch_out_b\n");
+      R"({
+  "input_channel": {},
+  "output_channel": {"ch_out_a": {}, "ch_out_b": {}}
+})");
   std::vector<std::pair<std::string, std::string>> module_cfgs{{"mod_g", cfg_path}};
   std::string provision_error;
-  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error));
+  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error))
+      << provision_error;
 
   ModuleRuntimeContext context;
   context.config.bus_kind = BusKind::kSingleNodeShm;
@@ -235,11 +251,14 @@ TEST_F(MouldBaseTest, UnmatchedBusinessHandlerUsesDefaultNoopHandler) {
   ShmBusControlPlane control_plane;
 
   const std::string cfg_path = WriteTempModuleChannelConfig(
-      "input ch_need_default\n"
-      "output ch_need_default\n");
+      R"({
+  "input_channel": {"ch_need_default": {}},
+  "output_channel": {"ch_need_default": {}}
+})");
   std::vector<std::pair<std::string, std::string>> module_cfgs{{"mod_h", cfg_path}};
   std::string provision_error;
-  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error));
+  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error))
+      << provision_error;
   std::atomic<int> callback_count{0};
   std::unordered_map<std::string, IPubSubBus::MessageHandler> handlers;
   handlers.emplace("ch_other", [&callback_count](const MessageEnvelope&) { ++callback_count; });
@@ -264,15 +283,22 @@ TEST_F(MouldBaseTest, DoInitAndSetupSubscriptionsAreCalledOnSuccessfulRun) {
   auto bus = std::make_shared<ShmBusRuntime>();
   ShmBusControlPlane control_plane;
   const std::string cfg_path = WriteTempModuleChannelConfig(
-      "input ch_x\n"
-      "input ch_y\n");
-  const std::string pub_cfg_path = WriteTempModuleChannelConfig("output ch_x\noutput ch_y\n");
+      R"({
+  "input_channel": {"ch_x": {}, "ch_y": {}},
+  "output_channel": {}
+})");
+  const std::string pub_cfg_path = WriteTempModuleChannelConfig(
+      R"({
+  "input_channel": {},
+  "output_channel": {"ch_x": {}, "ch_y": {}}
+})");
   std::vector<std::pair<std::string, std::string>> module_cfgs{
       {"mod_i", cfg_path},
       {"publisher_i", pub_cfg_path},
   };
   std::string provision_error;
-  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error));
+  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error))
+      << provision_error;
 
   ModuleRuntimeContext context;
   context.config.bus_kind = BusKind::kSingleNodeShm;
@@ -294,10 +320,15 @@ TEST_F(MouldBaseTest, DoInitAndSetupSubscriptionsAreCalledOnSuccessfulRun) {
 TEST_F(MouldBaseTest, PublishAllowedOnlyDuringRunningStage) {
   auto bus = std::make_shared<ShmBusRuntime>();
   ShmBusControlPlane control_plane;
-  const std::string cfg_path = WriteTempModuleChannelConfig("output ch_publish\n");
+  const std::string cfg_path = WriteTempModuleChannelConfig(
+      R"({
+  "input_channel": {},
+  "output_channel": {"ch_publish": {}}
+})");
   std::vector<std::pair<std::string, std::string>> module_cfgs{{"mod_j", cfg_path}};
   std::string provision_error;
-  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error));
+  ASSERT_TRUE(control_plane.ProvisionChannelTopologyFromModuleConfigs(module_cfgs, &provision_error))
+      << provision_error;
 
   ModuleRuntimeContext context;
   context.config.bus_kind = BusKind::kSingleNodeShm;

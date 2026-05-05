@@ -1,5 +1,6 @@
 #include "shm_bus_runtime.hpp"
 #include "grpc_pubsub_bus.hpp"
+#include "unified_output_envelope.pb.h"
 
 #include "channel_topology_config.hpp"
 
@@ -7,7 +8,6 @@
 #include <absl/status/statusor.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstring>
 #include <cerrno>
 #include <cstdint>
@@ -130,7 +130,7 @@ bool ShmBusRuntime::Subscribe(
     subscriber->consumer_index = *consumer_index;
     subscriber->event_fd = inherited_fd;
     subscriber->metrics = &metrics_;
-    subscriber->dedup_capacity = std::max<std::size_t>(config_.queue_depth, 1U);
+    subscriber->dedup_capacity = std::max<std::size_t>(config_.slot_payload_bytes, 1U);
     subscribers_by_channel_[channel].push_back(subscriber);
   }
 
@@ -165,7 +165,7 @@ bool ShmBusRuntime::StartUnifiedSubscriberPump() {
     auto slot = std::make_unique<UnifiedEpollSlot>();
     slot->subscriber = sub;
     epoll_event ev{};
-    ev.events = EPOLLIN;
+    ev.events = EPOLLIN | EPOLLET;
     ev.data.ptr = slot.get();
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, sub->event_fd, &ev) != 0) {
       (void)close(epfd);
@@ -185,7 +185,8 @@ bool ShmBusRuntime::StartUnifiedSubscriberPump() {
 bool ShmBusRuntime::TryDispatchOneRingMessage(
     RingLayoutView& ring,
     const std::shared_ptr<SubscriberEntry>& subscriber,
-    ConsumerAcker* acker) {
+    ConsumerAcker* acker,
+    mould::config::ShmBusDeliveryMode delivery_mode) {
   if (!subscriber || !acker) {
     VLOG(1) << "TryDispatchOneRingMessage: null subscriber or acker";
     return false;
@@ -252,19 +253,40 @@ bool ShmBusRuntime::TryDispatchOneRingMessage(
     }
   }
 
-  try {
-    subscriber->handler(message);
-    acker->Ack(message.delivery_id, message.maybe_duplicate, false);
-  } catch (...) {
-    acker->Ack(message.delivery_id, message.maybe_duplicate, true);
+  if (delivery_mode == mould::config::ShmBusDeliveryMode::kCompete) {
+    // Compete mode: try to claim the slot. Only the winner invokes the handler.
+    const bool claimed = ring.TryClaimSlot(slot_index);
+    if (claimed) {
+      try {
+        subscriber->handler(message);
+        acker->Ack(message.delivery_id, message.maybe_duplicate, false);
+      } catch (...) {
+        acker->Ack(message.delivery_id, message.maybe_duplicate, true);
+      }
+    } else {
+      VLOG(2) << "TryDispatchOneRingMessage: compete slot already claimed channel="
+              << subscriber->channel << " sequence=" << reservation.sequence;
+    }
+  } else {
+    // Broadcast mode: every consumer processes the message.
+    try {
+      subscriber->handler(message);
+      acker->Ack(message.delivery_id, message.maybe_duplicate, false);
+    } catch (...) {
+      acker->Ack(message.delivery_id, message.maybe_duplicate, true);
+    }
   }
-  if (!ring.CompleteConsumerSlot(
-          subscriber->consumer_index,
-          slot_index,
-          reservation.sequence + 1U)) {
+
+  // Always advance cursor (compete mode: winner and losers both advance).
+  const bool complete_ok = ring.CompleteConsumerSlot(
+      subscriber->consumer_index,
+      slot_index,
+      reservation.sequence + 1U);
+  if (!complete_ok) {
     LOG(WARNING) << "TryDispatchOneRingMessage: CompleteConsumerSlot failed channel=" << subscriber->channel
                  << " consumer_index=" << subscriber->consumer_index
                  << " sequence=" << reservation.sequence;
+    return false;
   }
   return true;
 }
@@ -309,6 +331,7 @@ void ShmBusRuntime::UnifiedSubscriberPumpLoop() {
         continue;
       }
 
+      mould::config::ShmBusDeliveryMode delivery_mode = mould::config::ShmBusDeliveryMode::kBroadcast;
       RingLayoutView ring;
       {
         std::lock_guard<std::mutex> lock(runtime_mutex_);
@@ -319,6 +342,7 @@ void ShmBusRuntime::UnifiedSubscriberPumpLoop() {
           continue;
         }
         ring = runtime_iter->second.ring;
+        delivery_mode = runtime_iter->second.delivery_mode;
       }
 
       VLOG(1) << "shm_pump: eventfd budget channel=" << sub->channel << " event_fd=" << sub->event_fd
@@ -329,7 +353,7 @@ void ShmBusRuntime::UnifiedSubscriberPumpLoop() {
         if (unified_pump_stop_.load(std::memory_order_acquire)) {
           break;
         }
-        if (!TryDispatchOneRingMessage(ring, sub, &acker)) {
+        if (!TryDispatchOneRingMessage(ring, sub, &acker, delivery_mode)) {
           break;
         }
         ++dispatched;
@@ -348,7 +372,6 @@ void ShmBusRuntime::UnifiedSubscriberPumpLoop() {
     unified_epoll_fd_ = -1;
   }
 }
-
 bool ShmBusRuntime::Publish(const std::string& module_name, const std::string& channel, ByteBuffer payload) {
   auto result = PublishWithStatus(module_name, channel, std::move(payload));
   if (!result.ok()) {
@@ -360,6 +383,28 @@ bool ShmBusRuntime::Publish(const std::string& module_name, const std::string& c
   return true;
 }
 
+bool ShmBusRuntime::Publish(
+    const std::string& module_name,
+    const std::string& channel,
+    const mould::test::unified::UnifiedOutputEnvelope& envelope) {
+  std::string serialized;
+  if (!envelope.SerializeToString(&serialized)) {
+    LOG(WARNING) << "ShmBusRuntime::Publish proto serialize failed, module=" << module_name
+                 << " channel=" << channel;
+    return false;
+  }
+  ByteBuffer payload(serialized.begin(), serialized.end());
+  auto result = PublishWithStatus(module_name, channel, std::move(payload));
+  if (!result.ok()) {
+    LOG(WARNING) << "ShmBusRuntime::Publish failed, module=" << module_name
+                 << " channel=" << channel
+                 << " reason=" << result.status();
+    return false;
+  }
+  return true;
+}
+
+
 absl::StatusOr<std::uint64_t> ShmBusRuntime::PublishWithStatus(
     const std::string& module_name, const std::string& channel, ByteBuffer payload) {
   RingLayoutView ring;
@@ -369,6 +414,10 @@ absl::StatusOr<std::uint64_t> ShmBusRuntime::PublishWithStatus(
     if (runtime_iter == runtime_by_channel_.end()) {
       return absl::NotFoundError("channel runtime not found: " + channel);
     }
+    const auto topology_iter = topology_index_.find(channel);
+    if (topology_iter == topology_index_.end()) {
+      return absl::NotFoundError("channel topology not found: " + channel);
+    }
     ring = runtime_iter->second.ring;
   }
 
@@ -377,7 +426,12 @@ absl::StatusOr<std::uint64_t> ShmBusRuntime::PublishWithStatus(
   RingHealthMetrics after_metrics{};
   std::string publish_error;
   if (!ring.PublishCommittedPayload(
-          channel, std::move(payload), &envelope, &before_metrics, &after_metrics, &publish_error)) {
+          channel,
+          std::move(payload),
+          &envelope,
+          &before_metrics,
+          &after_metrics,
+          &publish_error)) {
     const std::string reason =
         publish_error.empty() ? "PublishCommittedPayload failed (unknown)" : publish_error;
     return absl::UnavailableError("publish failed on channel " + channel + ": " + reason);
@@ -385,11 +439,15 @@ absl::StatusOr<std::uint64_t> ShmBusRuntime::PublishWithStatus(
 
   envelope.publisher_module = module_name;
 
-  std::vector<int> notify_fds;
+  struct OnlineNotify {
+    std::uint32_t consumer_index = 0;
+    int fd = -1;
+  };
+  std::vector<OnlineNotify> online;
   auto* consumers = ring.Consumers();
   auto* header = ring.Header();
   if (consumers != nullptr && header != nullptr) {
-    notify_fds.reserve(header->notification_capacity);
+    online.reserve(header->notification_capacity);
     for (std::uint32_t i = 0; i < header->notification_capacity; ++i) {
       const auto state = consumers[i].state.load(std::memory_order_acquire);
       if (state != static_cast<std::uint32_t>(ConsumerState::kOnline)) {
@@ -399,13 +457,15 @@ absl::StatusOr<std::uint64_t> ShmBusRuntime::PublishWithStatus(
       if (!fd.has_value() || *fd < 0) {
         continue;
       }
-      notify_fds.push_back(*fd);
+      online.push_back(OnlineNotify{i, *fd});
     }
   }
 
+  // Both broadcast and compete modes notify ALL online consumers.
+  // In compete mode, consumers race via TryClaimSlot; only the winner processes.
   const std::uint64_t signal_value = 1;
-  for (const int fd : notify_fds) {
-    (void)NotifyEventFd(fd, signal_value);
+  for (const auto& c : online) {
+    (void)NotifyEventFd(c.fd, signal_value);
   }
 
   (void)before_metrics;
@@ -482,8 +542,10 @@ bool ShmBusRuntime::EnsureChannelMappedAttachLocked(const std::string& channel) 
     return true;
   }
   const config::ChannelTopologyEntry& entry = topology_iter->second;
-  const std::size_t queue_depth = config::ComputeQueueDepthForChannel(&entry, config_.queue_depth);
-  const std::uint32_t slot_count = std::max<std::uint32_t>(1U, config_.shm_slot_count);
+  const std::size_t slot_payload_bytes =
+      config::ResolveSlotPayloadBytesForChannel(&entry, config_.slot_payload_bytes);
+  const std::uint32_t slot_count =
+      config::ResolveShmSlotCountForChannel(&entry, config_.shm_slot_count);
 
   const std::string shm_channel_key = config::CanonicalShmChannelKey(entry);
 
@@ -491,7 +553,7 @@ bool ShmBusRuntime::EnsureChannelMappedAttachLocked(const std::string& channel) 
   const std::uint32_t consumer_capacity =
       config::ResolveShmRingConsumerCapacity(&entry, config_.default_consumer_slots_per_channel);
   const std::size_t ring_layout_bytes = ComputeRingLayoutSizeBytes(slot_count, consumer_capacity);
-  layout.payload_capacity = ring_layout_bytes + queue_depth * slot_count;
+  layout.payload_capacity = ring_layout_bytes + slot_payload_bytes * slot_count;
   if (!RuntimeRegistryAllowsKey(allowed_shm_channel_keys_, registry_frozen_, shm_channel_key)) {
     LOG(WARNING) << "shm runtime: rejected Attach; registry frozen for key=" << shm_channel_key;
     return false;
@@ -511,6 +573,7 @@ bool ShmBusRuntime::EnsureChannelMappedAttachLocked(const std::string& channel) 
   ChannelRuntime runtime;
   runtime.segment = std::move(*mapped);
   runtime.ring = *ring;
+  runtime.delivery_mode = config::ResolveShmBusDeliveryModeForChannel(&entry);
   runtime_by_channel_.emplace(channel, std::move(runtime));
   return true;
 }

@@ -19,7 +19,7 @@ std::optional<RefCountedMessageStore::Handle> RefCountedMessageStore::Reserve() 
   return std::nullopt;
 }
 
-bool RefCountedMessageStore::WritePayload(const Handle& handle, PayloadPacket packet) {
+bool RefCountedMessageStore::WritePayload(const Handle& handle, ByteBuffer payload) {
   if (handle.slot >= slots_.size()) {
     return false;
   }
@@ -29,7 +29,7 @@ bool RefCountedMessageStore::WritePayload(const Handle& handle, PayloadPacket pa
   if (!MatchHandle(handle, slot) || !slot.reserved || slot.visible.load(std::memory_order_acquire)) {
     return false;
   }
-  slot.packet = std::move(packet);
+  slot.payload = std::move(payload);
   return true;
 }
 
@@ -40,7 +40,7 @@ bool RefCountedMessageStore::CommitVisible(const Handle& handle, std::uint32_t i
 
   SlotState& slot = slots_[handle.slot];
   std::lock_guard<std::mutex> lock(slot.mutex);
-  if (!MatchHandle(handle, slot) || !slot.reserved || slot.packet.data.empty()) {
+  if (!MatchHandle(handle, slot) || !slot.reserved || slot.payload.empty()) {
     return false;
   }
 
@@ -50,7 +50,7 @@ bool RefCountedMessageStore::CommitVisible(const Handle& handle, std::uint32_t i
   return true;
 }
 
-std::optional<PayloadPacket> RefCountedMessageStore::AcquireVisible(const Handle& handle) {
+std::optional<ByteBuffer> RefCountedMessageStore::AcquireVisible(const Handle& handle) {
   if (handle.slot >= slots_.size()) {
     return std::nullopt;
   }
@@ -61,7 +61,7 @@ std::optional<PayloadPacket> RefCountedMessageStore::AcquireVisible(const Handle
     return std::nullopt;
   }
   slot.ref_count.fetch_add(1, std::memory_order_acq_rel);
-  return slot.packet;
+  return slot.payload;
 }
 
 bool RefCountedMessageStore::Release(const Handle& handle) {
@@ -109,7 +109,7 @@ bool RefCountedMessageStore::MatchHandle(const Handle& handle, const SlotState& 
 }
 
 void RefCountedMessageStore::ResetSlotLocked(SlotState* slot) {
-  slot->packet = PayloadPacket{};
+  slot->payload.clear();
   slot->ref_count.store(0, std::memory_order_release);
   slot->visible.store(false, std::memory_order_release);
   slot->reserved = false;

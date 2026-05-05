@@ -67,18 +67,20 @@ std::optional<ShmSegment> ShmBusControlPlane::AttachChannel(
 std::optional<ShmBusControlPlane::AttachedChannelRing> ShmBusControlPlane::AttachChannelRingForSupervisor(
     const std::string& logical_channel,
     const mould::config::ChannelTopologyEntry* topology_entry,
-    std::size_t default_queue_depth) {
+    std::size_t default_slot_payload_bytes) {
   const mould::config::ChannelTopologyEntry* entry = topology_entry;
   const std::string shm_channel_key =
       entry != nullptr ? mould::config::CanonicalShmChannelKey(*entry) : logical_channel;
-  const std::size_t queue_depth = mould::config::ComputeQueueDepthForChannel(entry, default_queue_depth);
+  const std::size_t slot_payload_bytes =
+      mould::config::ResolveSlotPayloadBytesForChannel(entry, default_slot_payload_bytes);
   const std::uint32_t consumer_capacity =
       mould::config::ResolveShmRingConsumerCapacity(entry, DefaultConsumerSlotsPerChannel());
+  const std::uint32_t slot_count =
+      mould::config::ResolveShmSlotCountForChannel(entry, shm_slot_count_);
   ShmSegmentLayout layout{};
-  const std::uint32_t slot_count = std::max<std::uint32_t>(1U, shm_slot_count_);
   const std::size_t ring_layout_bytes =
       ComputeRingLayoutSizeBytes(slot_count, consumer_capacity);
-  layout.payload_capacity = ring_layout_bytes + queue_depth * slot_count;
+  layout.payload_capacity = ring_layout_bytes + slot_payload_bytes * slot_count;
   auto mapped = AttachChannel(shm_channel_key, layout);
   if (!mapped.has_value()) {
     return std::nullopt;
@@ -107,16 +109,17 @@ bool ShmBusControlPlane::ProvisionChannelTopology(
     const std::string& channel = channel_and_entry.first;
     const mould::config::ChannelTopologyEntry& entry = channel_and_entry.second;
     const mould::config::ChannelTopologyEntry* entry_ptr = &entry;
-    const std::size_t queue_depth =
-        mould::config::ComputeQueueDepthForChannel(entry_ptr, cfg.queue_depth);
+    const std::size_t slot_payload_bytes =
+        mould::config::ResolveSlotPayloadBytesForChannel(entry_ptr, cfg.slot_payload_bytes);
     const std::string shm_key = mould::config::CanonicalShmChannelKey(entry);
     const std::uint32_t consumer_capacity =
         mould::config::ResolveShmRingConsumerCapacity(entry_ptr, default_consumer_slots_per_channel_);
     ShmSegmentLayout layout{};
-    const std::uint32_t slot_count = shm_slot_count_;
+    const std::uint32_t slot_count =
+        mould::config::ResolveShmSlotCountForChannel(entry_ptr, shm_slot_count_);
     const std::size_t ring_layout_bytes =
         ComputeRingLayoutSizeBytes(slot_count, consumer_capacity);
-    layout.payload_capacity = ring_layout_bytes + queue_depth * slot_count;
+    layout.payload_capacity = ring_layout_bytes + slot_payload_bytes * slot_count;
     auto mapped = CreateOrAttachChannel(shm_key, layout);
     if (!mapped.has_value()) {
       return false;
@@ -130,7 +133,7 @@ bool ShmBusControlPlane::ProvisionChannelTopology(
           ring_span,
           slot_count,
           consumer_capacity,
-          static_cast<std::uint64_t>(queue_depth * slot_count));
+          static_cast<std::uint64_t>(slot_payload_bytes * slot_count));
     }
     if (!ring.has_value()) {
       return false;
@@ -186,14 +189,14 @@ void ShmBusControlPlane::FreezeAllowedChannelKeys(std::unordered_set<std::string
 bool ShmBusControlPlane::ReadConsumerOwnerIdentity(
     const std::string& logical_channel,
     const mould::config::ChannelTopologyEntry* topology_entry,
-    std::size_t default_queue_depth,
+    std::size_t default_slot_payload_bytes,
     std::uint32_t consumer_index,
     std::uint32_t* out_owner_pid,
     std::uint32_t* out_owner_epoch) {
   if (out_owner_pid == nullptr || out_owner_epoch == nullptr) {
     return false;
   }
-  const auto attached = AttachChannelRingForSupervisor(logical_channel, topology_entry, default_queue_depth);
+  const auto attached = AttachChannelRingForSupervisor(logical_channel, topology_entry, default_slot_payload_bytes);
   if (!attached.has_value()) {
     return false;
   }
@@ -215,11 +218,11 @@ bool ShmBusControlPlane::ReadConsumerOwnerIdentity(
 bool ShmBusControlPlane::TakeConsumerOfflineIfOwner(
     const std::string& logical_channel,
     const mould::config::ChannelTopologyEntry* topology_entry,
-    std::size_t default_queue_depth,
+    std::size_t default_slot_payload_bytes,
     std::uint32_t consumer_index,
     std::uint32_t owner_pid,
     std::uint32_t owner_epoch) {
-  auto attached = AttachChannelRingForSupervisor(logical_channel, topology_entry, default_queue_depth);
+  auto attached = AttachChannelRingForSupervisor(logical_channel, topology_entry, default_slot_payload_bytes);
   if (!attached.has_value()) {
     return false;
   }
@@ -233,12 +236,12 @@ bool ShmBusControlPlane::TakeConsumerOfflineIfOwner(
 std::uint32_t ShmBusControlPlane::TakeAllConsumersOfflineForProcessPid(
     std::uint32_t dead_owner_pid,
     const mould::config::ChannelTopologyIndex& topology,
-    std::size_t default_queue_depth) {
+    std::size_t default_slot_payload_bytes) {
   std::uint32_t count = 0;
   for (const auto& channel_and_entry : topology) {
     const std::string& logical_channel = channel_and_entry.first;
     const mould::config::ChannelTopologyEntry& entry = channel_and_entry.second;
-    auto attached = AttachChannelRingForSupervisor(logical_channel, &entry, default_queue_depth);
+    auto attached = AttachChannelRingForSupervisor(logical_channel, &entry, default_slot_payload_bytes);
     if (!attached.has_value()) {
       continue;
     }

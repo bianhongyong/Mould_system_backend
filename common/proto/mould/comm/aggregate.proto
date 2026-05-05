@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package mould.comm;
+
+import "mould/comm/image_meta.proto";
+
+message AggregatePayload {
+  ImageMeta image_meta = 1;
+  bytes payload_bytes = 2;
+}

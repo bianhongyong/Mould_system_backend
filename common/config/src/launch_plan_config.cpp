@@ -19,7 +19,8 @@ constexpr const char* kIoPathField = "io_channels_config_path";
 constexpr const char* kModulesField = "modules";
 constexpr const char* kMinLogLevelField = "minloglevel";
 constexpr const char* kCommunicationField = "communication";
-constexpr const char* kSlotCountField = "slot_count";
+constexpr const char* kShmSlotCountField = "shm_slot_count";
+constexpr const char* kSlotPayloadBytesField = "slot_payload_bytes";
 
 bool IsAllowedChannelChar(const char value) {
   return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') ||
@@ -738,6 +739,15 @@ bool LookupRequiredCpuSet(
   return true;
 }
 
+// Keys stored per-module in `ResourceSchema` / `ParsedModuleLaunchEntry::resource_schema`.
+// They remain in `resource` for ApplyLaunchPlanScalarsToRegisteredGflags but MUST NOT
+// participate in cross-module global scalar de-duplication (each module may differ).
+bool IsPerModuleResourceSchemaKey(const std::string& key) {
+  return key == "startup_priority" || key == "cpu_set" || key == "cpu_id" ||
+         key == "restart_backoff_ms" || key == "restart_max_retries" || key == "restart_window_ms" ||
+         key == "restart_fuse_ms" || key == "ready_timeout_ms";
+}
+
 bool ScalarsEqualForMerge(const LaunchPlanScalar& a, const LaunchPlanScalar& b) {
   if (a.index() == b.index()) {
     return a == b;
@@ -930,9 +940,10 @@ bool ParseLaunchPlanFile(
       }
       return false;
     }
-    const JValue* slot_count_node = FindObjectKey(communication_node->o, kSlotCountField);
+    const JValue* slot_count_node = FindObjectKey(communication_node->o, kShmSlotCountField);
+    const JValue* slot_payload_bytes_node = FindObjectKey(communication_node->o, kSlotPayloadBytesField);
     for (const auto& [ck, cv] : communication_node->o) {
-      if (ck != kSlotCountField) {
+      if (ck != kShmSlotCountField && ck != kSlotPayloadBytesField) {
         if (out_error != nullptr) {
           *out_error =
               std::string(kCommunicationField) + ": unknown key '" + ck + "'";
@@ -944,23 +955,57 @@ bool ParseLaunchPlanFile(
     if (slot_count_node != nullptr) {
       LaunchPlanScalar slot_scalar;
       if (!ScalarFromJsonLeaf(
-              *slot_count_node, std::string(kCommunicationField) + "." + kSlotCountField, &slot_scalar, out_error)) {
+              *slot_count_node,
+              std::string(kCommunicationField) + "." + kShmSlotCountField,
+              &slot_scalar,
+              out_error)) {
         return false;
       }
       std::int64_t slot_count_value = 0;
       if (!TryExtractInt64(
-              slot_scalar, std::string(kCommunicationField) + "." + kSlotCountField, &slot_count_value, out_error)) {
+              slot_scalar,
+              std::string(kCommunicationField) + "." + kShmSlotCountField,
+              &slot_count_value,
+              out_error)) {
         return false;
       }
       if (slot_count_value <= 0 ||
           slot_count_value > static_cast<std::int64_t>(std::numeric_limits<std::uint32_t>::max())) {
         if (out_error != nullptr) {
-          *out_error = std::string(kCommunicationField) + "." + kSlotCountField +
+          *out_error = std::string(kCommunicationField) + "." + kShmSlotCountField +
               ": must be in range [1,4294967295]";
         }
         return false;
       }
       out_plan->communication_slot_count = static_cast<std::uint32_t>(slot_count_value);
+    }
+    if (slot_payload_bytes_node != nullptr) {
+      LaunchPlanScalar payload_scalar;
+      if (!ScalarFromJsonLeaf(
+              *slot_payload_bytes_node,
+              std::string(kCommunicationField) + "." + kSlotPayloadBytesField,
+              &payload_scalar,
+              out_error)) {
+        return false;
+      }
+      std::int64_t slot_payload_bytes_value = 0;
+      if (!TryExtractInt64(
+              payload_scalar,
+              std::string(kCommunicationField) + "." + kSlotPayloadBytesField,
+              &slot_payload_bytes_value,
+              out_error)) {
+        return false;
+      }
+      if (slot_payload_bytes_value <= 0 ||
+          slot_payload_bytes_value >
+              static_cast<std::int64_t>(std::numeric_limits<std::int64_t>::max())) {
+        if (out_error != nullptr) {
+          *out_error = std::string(kCommunicationField) + "." + kSlotPayloadBytesField +
+              ": must be a positive integer";
+        }
+        return false;
+      }
+      out_plan->communication_slot_payload_bytes = static_cast<std::size_t>(slot_payload_bytes_value);
     }
   }
 
@@ -1073,6 +1118,9 @@ bool ParseLaunchPlanFile(
     }
 
     for (const auto& [gk, gv] : entry.resource) {
+      if (IsPerModuleResourceSchemaKey(gk)) {
+        continue;
+      }
       if (!RecordGlobalScalar(gk, gv, &global_scalars, out_error)) {
         return false;
       }

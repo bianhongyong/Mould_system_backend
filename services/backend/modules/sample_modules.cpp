@@ -205,7 +205,7 @@ class FrameSourceModule final : public ModuleBase {
   }
 
   // 常驻单线程生产，默认约 320 msg/s。
-  static constexpr auto kPublishInterval = std::chrono::microseconds(5);
+  static constexpr auto kPublishInterval = std::chrono::microseconds(7);
   std::atomic<bool> producer_started_{false};
   std::atomic<bool> producer_stop_{false};
   std::thread producer_thread_;

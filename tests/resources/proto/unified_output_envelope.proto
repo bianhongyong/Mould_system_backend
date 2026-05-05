@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package mould.test.unified;
+
+import "sensor_fusion/sensor_fusion_telemetry.proto";
+import "risk_eval/risk_eval_core.proto";
+import "path_plan/path_plan_core.proto";
+import "actuator_coord/actuator_coord_core.proto";
+import "image_frame.proto";
+
+// 统一输出通道封装：同一时刻 oneof 内仅能设置一种具体业务消息。
+message UnifiedOutputEnvelope {
+  uint64 envelope_seq = 1;
+  uint64 emit_ts_us = 2;
+  string source_module = 3;
+  string source_channel = 4;
+
+  oneof payload {
+    mould.test.sensorfusion.TelemetryIngress telemetry_ingress = 10;
+    mould.test.sensorfusion.PerceptionTrack perception_track = 11;
+    mould.test.sensorfusion.SensorFusionAuditEvent sensor_fusion_audit_event = 12;
+
+    mould.test.riskeval.RiskScore risk_score = 20;
+    mould.test.riskeval.DiagnosisAlert diagnosis_alert = 21;
+    mould.test.riskeval.RiskEvalAuditEvent risk_eval_audit_event = 22;
+
+    mould.test.pathplan.PlanTrajectory plan_trajectory = 30;
+    mould.test.pathplan.CommandHint command_hint = 31;
+    mould.test.pathplan.PathPlanAuditEvent path_plan_audit_event = 32;
+
+    mould.test.actuatorcoord.ActuatorCommand actuator_command = 40;
+    mould.test.actuatorcoord.SyncHeartbeat sync_heartbeat = 41;
+    mould.test.actuatorcoord.ActuatorCoordAuditEvent actuator_coord_audit_event = 42;
+    mould.common.image.ImageFrame image_frame = 50;
+  }
+}

@@ -38,8 +38,8 @@ bool TestParseModuleTxtConfig() {
   const std::string path = WriteTempConfig(
       "module2_parser_ok.txt",
       "# parser accepts comment and params\n"
-      "output broker.frames queue_depth_per_consumer=16\n"
-      "input infer.results queue_depth=64\n");
+      "output broker.frames slot_payload_bytes=16\n"
+      "input infer.results slot_payload_bytes=64\n");
 
   ModuleChannelConfig config;
   std::string error;
@@ -56,14 +56,14 @@ bool TestParseModuleTxtConfig() {
     return false;
   }
   return Check(
-      config.output_channels.front().params.at("queue_depth_per_consumer") == "16",
-      "output params should keep queue_depth_per_consumer");
+      config.output_channels.front().params.at("slot_payload_bytes") == "16",
+      "output params should keep slot_payload_bytes");
 }
 
 bool TestParseRejectsInvalidSyntax() {
   const std::string path = WriteTempConfig(
       "module2_parser_invalid.txt",
-      "publish broker.frames queue_depth=16\n");
+      "publish broker.frames slot_payload_bytes=16\n");
   ModuleChannelConfig config;
   std::string error;
   const bool parsed = ParseModuleChannelConfigFile("broker", path, &config, &error);
@@ -86,15 +86,15 @@ bool TestParseRejectsDuplicateOutputChannel() {
 bool TestBuildTopologyAndConflictChecks() {
   const std::string broker_path = WriteTempConfig(
       "module2_broker.txt",
-      "output broker.frames queue_depth_per_consumer=8\n"
+      "output broker.frames slot_payload_bytes=8\n"
       "input infer.results\n");
   const std::string infer_path = WriteTempConfig(
       "module2_infer.txt",
-      "input broker.frames queue_depth_per_consumer=8\n"
+      "input broker.frames slot_payload_bytes=8\n"
       "output infer.results\n");
   const std::string rogue_path = WriteTempConfig(
       "module2_rogue_conflict.txt",
-      "output broker.frames queue_depth_per_consumer=8\n");
+      "output broker.frames slot_payload_bytes=8\n");
 
   ModuleChannelConfig broker;
   ModuleChannelConfig infer;
@@ -138,10 +138,10 @@ bool TestBuildTopologyAndConflictChecks() {
 bool TestTopologyRejectsParameterConflict() {
   const std::string module_a_path = WriteTempConfig(
       "module2_param_a.txt",
-      "output broker.frames queue_depth=64\n");
+      "output broker.frames slot_payload_bytes=64\n");
   const std::string module_b_path = WriteTempConfig(
       "module2_param_b.txt",
-      "input broker.frames queue_depth=128\n");
+      "input broker.frames slot_payload_bytes=128\n");
 
   ModuleChannelConfig module_a;
   ModuleChannelConfig module_b;
@@ -166,14 +166,14 @@ bool TestBuildTopologyFromConfigFiles() {
       R"({
   "input_channel": {},
   "output_channel": {
-    "broker.frames": {"queue_depth_per_consumer": "8"}
+    "broker.frames": {"slot_payload_bytes": "8"}
   }
 })");
   const std::string infer_path = WriteTempConfig(
       "module2_file_infer.json",
       R"({
   "input_channel": {
-    "broker.frames": {"queue_depth_per_consumer": "8"}
+    "broker.frames": {"slot_payload_bytes": "8"}
   },
   "output_channel": {}
 })");
@@ -196,9 +196,9 @@ bool TestShmPreallocationUsesTopology() {
   const std::string shm_name = BuildDeterministicShmName(CanonicalShmChannelKey(topology[channel]));
   shm_unlink(shm_name.c_str());
   // Per-slot payload budget is ceil(payload_region_bytes / slot_count); with the
-  // current ring layout, payload_region_bytes = queue_depth * slot_count, so the
-  // configured queue_depth is also the maximum per-message payload size.
-  topology[channel].params["queue_depth"] = "31";
+  // current ring layout, payload_region_bytes = slot_payload_bytes * slot_count, so the
+  // configured slot_payload_bytes is also the maximum per-message payload size.
+  topology[channel].params["slot_payload_bytes"] = "31";
 
   MiddlewareConfig middleware_config;
   ShmBusControlPlane control_plane;
@@ -248,14 +248,28 @@ bool TestResolveShmRingConsumerCapacity() {
   if (!Check(ResolveShmRingConsumerCapacity(&entry, 10) == 10, "zero consumer_count should use default")) {
     return false;
   }
+  entry.params["shm_consumer_slots"] = "6";
+  if (!Check(
+          ResolveShmRingConsumerCapacity(&entry, 10) == 6,
+          "channel shm_consumer_slots should override default floor")) {
+    return false;
+  }
   entry.consumer_count = 3;
-  if (!Check(ResolveShmRingConsumerCapacity(&entry, 10) == 10, "topology below default should use default floor")) {
+  if (!Check(
+          ResolveShmRingConsumerCapacity(&entry, 10) == 6,
+          "topology below channel override should keep channel override")) {
     return false;
   }
   entry.consumer_count = 20;
+  if (!Check(
+          ResolveShmRingConsumerCapacity(&entry, 10) == 20,
+          "topology above default should use larger capacity")) {
+    return false;
+  }
+  entry.params["shm_consumer_slots"] = "32";
   return Check(
-      ResolveShmRingConsumerCapacity(&entry, 10) == 20,
-      "topology above default should use larger capacity");
+      ResolveShmRingConsumerCapacity(&entry, 10) == 32,
+      "channel shm_consumer_slots above topology should expand capacity");
 }
 
 bool TestCanonicalShmChannelKeyPrefersProducerThenConsumer() {

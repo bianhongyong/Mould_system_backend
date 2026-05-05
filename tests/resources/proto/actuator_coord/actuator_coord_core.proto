@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package mould.test.actuatorcoord;
+
+message ActuatorCommand {
+  uint64 seq = 1;
+  uint32 throttle = 2;
+  uint32 brake = 3;
+  uint32 steer = 4;
+  string trigger = 5;
+  uint32 fault_level = 6;
+}
+
+message SyncHeartbeat {
+  uint32 epoch = 1;
+  string state = 2;
+  uint64 last_cmd_seq = 3;
+  uint64 heartbeat_ts_us = 4;
+}
+
+message ActuatorCoordAuditEvent {
+  uint64 cmd_seq = 1;
+  string trigger = 2;
+  uint32 throttle = 3;
+  uint32 brake = 4;
+  uint32 steer = 5;
+  uint32 risk_score = 6;
+  uint32 fault_level = 7;
+  uint64 event_ts_us = 8;
+}

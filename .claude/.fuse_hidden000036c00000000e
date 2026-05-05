@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash([ -d \"$ARCHIVE_DIR\" ])",
+      "Bash(exit 1)",
+      "Bash(mkdir -p openspec/changes/archive)",
+      "Bash(mv openspec/changes/add-shm-compete-delivery-mode openspec/changes/archive/2026-05-05-add-shm-compete-delivery-mode)"
+    ]
+  }
+}

@@ -4,10 +4,12 @@
 #include <cstdint>
 #include <cctype>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <sstream>
+#include <set>
 #include <unordered_set>
 #include <utility>
 
@@ -74,6 +76,29 @@ bool ParseParamToken(
     return false;
   }
   return true;
+}
+
+ChannelPayloadType ParseChannelPayloadType(const std::string& value) {
+  if (value.empty() || value == "protobuf" || value == "proto") {
+    return ChannelPayloadType::kProtobuf;
+  }
+  if (value == "image" || value == "image_binary_meta") {
+    return ChannelPayloadType::kImage;
+  }
+  if (value == "binary" || value == "binary_blob" || value == "raw") {
+    return ChannelPayloadType::kBinaryBlob;
+  }
+  return ChannelPayloadType::kUnknown;
+}
+
+std::string ParamOrEmpty(
+    const std::unordered_map<std::string, std::string>& params,
+    const std::string& key) {
+  const auto iter = params.find(key);
+  if (iter == params.end()) {
+    return {};
+  }
+  return iter->second;
 }
 
 void MergeModule(
@@ -686,6 +711,18 @@ bool BuildChannelTopologyIndex(
       }
       return false;
     }
+    const auto delivery_iter = entry.params.find("delivery_mode");
+    if (delivery_iter != entry.params.end() && !delivery_iter->second.empty() &&
+        !IsValidShmBusDeliveryModeParamValue(delivery_iter->second)) {
+      if (out_error != nullptr) {
+        *out_error = "channel '" + channel + "': invalid delivery_mode '" + delivery_iter->second +
+            "' (use broadcast or compete)";
+      }
+      return false;
+    }
+    if (!ValidateChannelSchemaGovernance(entry, out_error)) {
+      return false;
+    }
   }
 
   *out_topology = std::move(topology);
@@ -708,33 +745,193 @@ bool BuildChannelTopologyIndexFromFiles(
   return BuildChannelTopologyIndex(configs, out_topology, out_error);
 }
 
+const char* ChannelPayloadTypeName(ChannelPayloadType type) {
+  switch (type) {
+    case ChannelPayloadType::kProtobuf:
+      return "protobuf";
+    case ChannelPayloadType::kImage:
+      return "image";
+    case ChannelPayloadType::kBinaryBlob:
+      return "binary";
+    case ChannelPayloadType::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+ChannelPayloadType ResolveChannelPayloadType(const ChannelTopologyEntry& entry) {
+  return ParseChannelPayloadType(ParamOrEmpty(entry.params, "payload_type"));
+}
+
+bool ValidateChannelSchemaGovernance(
+    const ChannelTopologyEntry& entry,
+    std::string* out_error) {
+  const ChannelPayloadType payload_type = ResolveChannelPayloadType(entry);
+  if (payload_type == ChannelPayloadType::kUnknown) {
+    if (out_error != nullptr) {
+      *out_error = "unknown payload_type for channel '" + entry.channel + "': " +
+          ParamOrEmpty(entry.params, "payload_type");
+    }
+    return false;
+  }
+  if (payload_type != ChannelPayloadType::kProtobuf) {
+    return true;
+  }
+  const std::string proto_message = ParamOrEmpty(entry.params, "proto_message");
+  if (!proto_message.empty() && proto_message != entry.channel) {
+    if (out_error != nullptr) {
+      *out_error = "channel schema mismatch: channel '" + entry.channel +
+          "' must equal protobuf message name '" + proto_message + "'";
+    }
+    return false;
+  }
+  return true;
+}
+
+bool ValidateProtoReservedFieldNumbers(
+    const std::string& proto_text,
+    std::string* out_error) {
+  std::set<std::int64_t> reserved_numbers;
+  std::istringstream lines(proto_text);
+  std::string line;
+  while (std::getline(lines, line)) {
+    const std::string trimmed = Trim(line);
+    if (trimmed.rfind("reserved ", 0) == 0) {
+      std::istringstream iss(trimmed.substr(std::string("reserved ").size()));
+      std::string token;
+      while (std::getline(iss, token, ',')) {
+        token = Trim(token);
+        if (!token.empty() && token.back() == ';') {
+          token.pop_back();
+        }
+        if (!token.empty() && std::all_of(token.begin(), token.end(), [](unsigned char c) {
+              return std::isdigit(c);
+            })) {
+          reserved_numbers.insert(std::stoll(token));
+        }
+      }
+      continue;
+    }
+    const auto equals_pos = trimmed.find('=');
+    if (equals_pos == std::string::npos) {
+      continue;
+    }
+    std::size_t number_begin = equals_pos + 1U;
+    while (number_begin < trimmed.size() &&
+           std::isspace(static_cast<unsigned char>(trimmed[number_begin]))) {
+      ++number_begin;
+    }
+    std::size_t number_end = number_begin;
+    while (number_end < trimmed.size() &&
+           std::isdigit(static_cast<unsigned char>(trimmed[number_end]))) {
+      ++number_end;
+    }
+    if (number_begin == number_end) {
+      continue;
+    }
+    const std::int64_t field_number = std::stoll(trimmed.substr(number_begin, number_end - number_begin));
+    if (reserved_numbers.find(field_number) != reserved_numbers.end()) {
+      if (out_error != nullptr) {
+        *out_error = "protobuf field number " + std::to_string(field_number) +
+            " reuses a reserved number";
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+namespace {
+
+std::string ToLowerAscii(std::string_view value) {
+  std::string out;
+  out.reserve(value.size());
+  for (char c : value) {
+    out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  return out;
+}
+
+}  // namespace
+
+bool IsValidShmBusDeliveryModeParamValue(const std::string& value) {
+  if (value.empty()) {
+    return true;
+  }
+  const std::string lower = ToLowerAscii(value);
+  return lower == "broadcast" || lower == "compete";
+}
+
+ShmBusDeliveryMode ResolveShmBusDeliveryModeForChannel(const ChannelTopologyEntry* entry) {
+  if (entry == nullptr) {
+    return ShmBusDeliveryMode::kBroadcast;
+  }
+  const auto iter = entry->params.find("delivery_mode");
+  if (iter == entry->params.end() || iter->second.empty()) {
+    return ShmBusDeliveryMode::kBroadcast;
+  }
+  const std::string lower = ToLowerAscii(iter->second);
+  if (lower == "compete") {
+    return ShmBusDeliveryMode::kCompete;
+  }
+  return ShmBusDeliveryMode::kBroadcast;
+}
+
 std::uint32_t ResolveShmRingConsumerCapacity(
     const ChannelTopologyEntry* entry,
     const std::uint32_t default_consumer_slots_per_channel) {
   const std::uint32_t floor_default = std::max<std::uint32_t>(1U, default_consumer_slots_per_channel);
-  if (entry == nullptr || entry->consumer_count == 0) {
+  if (entry == nullptr) {
     return floor_default;
   }
-  const auto specified = static_cast<std::uint32_t>(entry->consumer_count);
-  return std::max(floor_default, specified);
+  std::uint32_t resolved = floor_default;
+  const auto configured_iter = entry->params.find("shm_consumer_slots");
+  if (configured_iter != entry->params.end()) {
+    const std::size_t configured = ParsePositiveSizeOrZero(configured_iter->second);
+    if (configured > 0 && configured <= static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+      resolved = static_cast<std::uint32_t>(configured);
+    }
+  }
+  if (entry->consumer_count == 0) {
+    return resolved;
+  }
+  const auto topology_consumer_count = static_cast<std::uint32_t>(entry->consumer_count);
+  return std::max(resolved, topology_consumer_count);
 }
 
-std::size_t ComputeQueueDepthForChannel(
+std::size_t ResolveSlotPayloadBytesForChannel(
     const ChannelTopologyEntry* entry,
-    const std::size_t default_queue_depth) {
-  std::size_t resolved = std::max<std::size_t>(1, default_queue_depth);
+    const std::size_t default_slot_payload_bytes) {
+  std::size_t resolved = std::max<std::size_t>(1, default_slot_payload_bytes);
   if (entry == nullptr) {
     return resolved;
   }
-
-  const auto queue_depth_iter = entry->params.find("queue_depth");
-  if (queue_depth_iter != entry->params.end()) {
-    const std::size_t configured = ParsePositiveSizeOrZero(queue_depth_iter->second);
+  const auto slot_payload_iter = entry->params.find("slot_payload_bytes");
+  if (slot_payload_iter != entry->params.end()) {
+    const std::size_t configured = ParsePositiveSizeOrZero(slot_payload_iter->second);
     if (configured > 0) {
       return configured;
     }
   }
   return resolved;
+}
+
+std::uint32_t ResolveShmSlotCountForChannel(
+    const ChannelTopologyEntry* entry,
+    const std::uint32_t default_shm_slot_count) {
+  const std::uint32_t resolved = std::max<std::uint32_t>(1U, default_shm_slot_count);
+  if (entry == nullptr) {
+    return resolved;
+  }
+  const auto slot_count_iter = entry->params.find("shm_slot_count");
+  if (slot_count_iter == entry->params.end()) {
+    return resolved;
+  }
+  const std::size_t configured = ParsePositiveSizeOrZero(slot_count_iter->second);
+  if (configured == 0 || configured > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+    return resolved;
+  }
+  return static_cast<std::uint32_t>(configured);
 }
 
 std::string CanonicalShmChannelKey(const ChannelTopologyEntry& entry) {

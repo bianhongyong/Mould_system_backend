@@ -347,6 +347,18 @@ bool RingLayoutView::TryReadNextForConsumer(
   return true;
 }
 
+bool RingLayoutView::TryClaimSlot(std::uint32_t slot_index) {
+  if (!IsSlotIndexValid(slot_index)) {
+    return false;
+  }
+  auto& slot = slots_[slot_index];
+  std::uint32_t expected = 0;
+  return slot.claimed.compare_exchange_strong(
+      expected, 1,
+      std::memory_order_seq_cst,
+      std::memory_order_seq_cst);
+}
+
 bool RingLayoutView::ResetSlot(std::uint32_t slot_index) {
   if (!IsSlotIndexValid(slot_index)) {
     return false;
@@ -356,6 +368,7 @@ bool RingLayoutView::ResetSlot(std::uint32_t slot_index) {
   slot.payload_size = 0;
   slot.payload_offset = 0;
   slot.state_sequence.store(PackSlotControl(SlotState::kEmpty, 0), std::memory_order_seq_cst);
+  slot.claimed.store(0, std::memory_order_relaxed);
   return true;
 }
 
@@ -603,6 +616,14 @@ bool RingLayoutView::AdvanceConsumerCursor(std::uint32_t consumer_index, std::ui
   }
 
   std::uint64_t current = consumer.read_sequence.load(std::memory_order_seq_cst);
+  if (current > next_read_sequence) {
+    // Regression: cursor already past the target. Without SyncPeerConsumerCursors
+    // this is a caller bug, not a concurrent peer advance.
+    return false;
+  }
+  if (current == next_read_sequence) {
+    return true;
+  }
   while (next_read_sequence >= current) {
     if (consumer.read_sequence.compare_exchange_weak(
             current,
@@ -614,6 +635,10 @@ bool RingLayoutView::AdvanceConsumerCursor(std::uint32_t consumer_index, std::ui
       if (value % kCursorAdvanceFallbackReclaimInterval == 0U) {
         (void)ReclaimCommittedSlots();
       }
+      return true;
+    }
+    // CAS 失败后 current 已更新，若已被推进到 >= target，也视为成功
+    if (current >= next_read_sequence) {
       return true;
     }
   }
@@ -793,6 +818,10 @@ bool RingLayoutView::TryReclaimSlotIfSafe(std::uint32_t slot_index) {
           std::memory_order_seq_cst)) {
     return false;
   }
+
+  // Compete-mode claimed flag must be reset so the next message in this slot
+  // starts unclaimed.
+  slot.claimed.store(0, std::memory_order_relaxed);
 
   const std::uint64_t reclaimed_sequence = committed_sequence;
 

@@ -18,7 +18,7 @@ struct RetryPolicy {
 };
 
 struct MiddlewareConfig {
-  std::size_t queue_depth = 1024;
+  std::size_t slot_payload_bytes = 1024;
   std::chrono::milliseconds ttl{1000};
   RetryPolicy retry_policy;
   std::size_t backlog_alarm_threshold = 512;
@@ -36,6 +36,11 @@ struct ReliabilityMetrics {
   std::atomic<std::uint64_t> delivery_duplicates{0};
   std::atomic<std::uint64_t> consumer_ack_success{0};
   std::atomic<std::uint64_t> consumer_ack_timeout{0};
+  std::atomic<std::uint64_t> codec_unknown_payload_type_errors{0};
+  std::atomic<std::uint64_t> codec_mismatch_errors{0};
+  std::atomic<std::uint64_t> image_message_oversize_errors{0};
+  std::atomic<std::uint64_t> image_checksum_errors{0};
+  std::atomic<std::uint64_t> channel_schema_errors{0};
 };
 
 class ReliablePublisher {

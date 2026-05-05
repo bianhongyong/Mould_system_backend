@@ -18,6 +18,10 @@
 #include <unordered_set>
 #include <vector>
 
+namespace mould::test::unified {
+class UnifiedOutputEnvelope;
+}
+
 namespace mould::comm {
 
 /// Linux SHM pub/sub data plane: publish/subscribe **attach** to segments created by
@@ -51,6 +55,10 @@ class ShmBusRuntime : public IPubSubBus {
       const std::string& channel,
       MessageHandler handler) override;
   bool Publish(const std::string& module_name, const std::string& channel, ByteBuffer payload) override;
+  bool Publish(
+      const std::string& module_name,
+      const std::string& channel,
+      const mould::test::unified::UnifiedOutputEnvelope& envelope);
   absl::StatusOr<std::uint64_t> PublishWithStatus(
       const std::string& module_name,
       const std::string& channel,
@@ -98,13 +106,15 @@ class ShmBusRuntime : public IPubSubBus {
   struct ChannelRuntime {
     ShmSegment segment;
     RingLayoutView ring;
+    mould::config::ShmBusDeliveryMode delivery_mode = mould::config::ShmBusDeliveryMode::kBroadcast;
   };
 
   void UnifiedSubscriberPumpLoop();
-  static bool TryDispatchOneRingMessage(
+  bool TryDispatchOneRingMessage(
       RingLayoutView& ring,
       const std::shared_ptr<SubscriberEntry>& subscriber,
-      ConsumerAcker* acker);
+      ConsumerAcker* acker,
+      mould::config::ShmBusDeliveryMode delivery_mode);
   /// Attaches SHM for `channel` which must exist in `topology_index_`. Called only while building
   /// the runtime table during `SetChannelTopology`.
   bool EnsureChannelMappedAttachLocked(const std::string& channel);
