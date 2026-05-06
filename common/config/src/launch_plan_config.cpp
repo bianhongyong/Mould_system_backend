@@ -2,6 +2,9 @@
 
 #include <gflags/gflags.h>
 
+#include <cstdlib>   // setenv
+#include <cstring>   // std::strlen
+
 #include <cmath>
 #include <cctype>
 #include <fstream>
@@ -534,7 +537,7 @@ bool ParseModuleIoJsonFile(
 
 bool JsonKeyRequiresIntegralValue(const std::string& key) {
   // Used by unit test `ParseFails_InvalidScalarTypeInResource` (typed JSON vs string).
-  return key == "mould_test_typecheck_int";
+  return key == "test_typecheck_int";
 }
 
 bool ParseStringMapScalars(
@@ -864,6 +867,61 @@ bool ApplyLaunchPlanScalarsToRegisteredGflags(const ParsedLaunchPlan& plan, std:
   return true;
 }
 
+bool ApplyLaunchPlanScalarsToMatchingRegisteredGflags(
+    const ParsedLaunchPlan& plan,
+    LaunchPlanGflagMatchPolicy policy,
+    std::string* out_error) {
+  // 标准 resource 字段由 ParsedModuleLaunchEntry::resource_schema 消费，不应对应全局 gflags
+  // （且键名可能与第三方库注册的 flag 撞名，例如 startup_priority）。
+  auto is_bundled_resource_schema_field = [](const std::string& key) -> bool {
+    return key == "startup_priority" || key == "cpu_set" || key == "cpu_id" ||
+           key == "restart_backoff_ms" || key == "restart_max_retries" || key == "restart_window_ms" ||
+           key == "restart_fuse_ms" || key == "ready_timeout_ms";
+  };
+
+  auto apply_one = [&](const std::string& module_name, const std::string& key,
+                       const LaunchPlanScalar& value) -> bool {
+    google::CommandLineFlagInfo info;
+    if (!google::GetCommandLineFlagInfo(key.c_str(), &info)) {
+      if (policy == LaunchPlanGflagMatchPolicy::kFailOnUnknownKeys) {
+        if (out_error != nullptr) {
+          *out_error = "no gflag registered for key '" + key + "' (module " + module_name + ")";
+        }
+        return false;
+      }
+      return true;
+    }
+    const std::string assign = ScalarToAssignmentString(value);
+    // gflags: 成功时返回非空（新值的描述），失败（未知 flag / 非法值）时返回空串。
+    const std::string set_result = google::SetCommandLineOption(key.c_str(), assign.c_str());
+    if (set_result.empty()) {
+      if (out_error != nullptr) {
+        *out_error = "SetCommandLineOption failed for key '" + key + "' module=" + module_name +
+                     " value='" + assign + "'";
+      }
+      return false;
+    }
+    return true;
+  };
+
+  for (const auto& mod : plan.modules) {
+    for (const auto& [k, v] : mod.resource) {
+      if (is_bundled_resource_schema_field(k)) {
+        continue;
+      }
+      if (!apply_one(mod.module_name, k, v)) {
+        return false;
+      }
+    }
+    for (const auto& [k, v] : mod.module_params) {
+      if (!apply_one(mod.module_name, k, v)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 bool ParseLaunchPlanFile(
   const std::string& launch_plan_file_path,
   ParsedLaunchPlan* out_plan,
@@ -1153,6 +1211,83 @@ bool ParseLaunchPlanFile(
   }
   out_plan->modules = std::move(staged_modules);
   return true;
+}
+
+bool SetupRuntimeEnvironmentFromLaunchPlan(
+    const std::unordered_map<std::string, ParsedModuleLaunchEntry>& module_entries,
+    const ParsedLaunchPlan& launch_plan,
+    std::vector<std::pair<std::string, std::string>>* out_module_config_files,
+    std::string* out_error) {
+  if (out_module_config_files == nullptr) {
+    if (out_error != nullptr) {
+      *out_error = "out_module_config_files is null";
+    }
+    return false;
+  }
+  out_module_config_files->clear();
+  out_module_config_files->reserve(module_entries.size());
+  std::ostringstream module_configs;
+  bool first = true;
+  for (const auto& [module_name, module_entry] : module_entries) {
+    if (module_entry.io_channels_config_path_resolved.empty()) {
+      if (out_error != nullptr) {
+        *out_error = "module '" + module_name + "' has empty resolved io config path";
+      }
+      return false;
+    }
+    if (!first) {
+      module_configs << ";";
+    }
+    first = false;
+    module_configs << module_name << "=" << module_entry.io_channels_config_path_resolved;
+    out_module_config_files->push_back({module_name, module_entry.io_channels_config_path_resolved});
+  }
+
+  const std::string configs_value = module_configs.str();
+  if (configs_value.empty()) {
+    if (out_error != nullptr) {
+      *out_error = "no module configs found when preparing MOULD_MODULE_CHANNEL_CONFIGS";
+    }
+    return false;
+  }
+
+  if (setenv("MOULD_MODULE_CHANNEL_CONFIGS", configs_value.c_str(), 1) != 0) {
+    if (out_error != nullptr) {
+      *out_error = "setenv MOULD_MODULE_CHANNEL_CONFIGS failed, errno=" + std::to_string(errno);
+    }
+    return false;
+  }
+  if (setenv("MOULD_FORK_INHERITANCE_TOKEN", "backend_main_fork_model", 1) != 0) {
+    if (out_error != nullptr) {
+      *out_error = "setenv MOULD_FORK_INHERITANCE_TOKEN failed, errno=" + std::to_string(errno);
+    }
+    return false;
+  }
+  const std::uint32_t configured_slot_count = launch_plan.communication_slot_count.value_or(256U);
+  const std::string slot_count_value = std::to_string(configured_slot_count);
+  if (setenv("MOULD_SHM_SLOT_COUNT", slot_count_value.c_str(), 1) != 0) {
+    if (out_error != nullptr) {
+      *out_error = "setenv MOULD_SHM_SLOT_COUNT failed, errno=" + std::to_string(errno);
+    }
+    return false;
+  }
+  const std::size_t configured_slot_payload_bytes =
+      launch_plan.communication_slot_payload_bytes.value_or(1024U);
+  const std::string slot_payload_bytes_value = std::to_string(configured_slot_payload_bytes);
+  if (setenv("MOULD_SHM_SLOT_PAYLOAD_BYTES", slot_payload_bytes_value.c_str(), 1) != 0) {
+    if (out_error != nullptr) {
+      *out_error = "setenv MOULD_SHM_SLOT_PAYLOAD_BYTES failed, errno=" + std::to_string(errno);
+    }
+    return false;
+  }
+  return true;
+}
+
+std::string ResolveLaunchPlanPath(int argc, char** argv) {
+  if (argc > 1 && argv[1] != nullptr && std::strlen(argv[1]) > 0) {
+    return argv[1];
+  }
+  return {};
 }
 
 }  // namespace mould::config

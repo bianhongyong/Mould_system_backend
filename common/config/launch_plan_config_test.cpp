@@ -15,18 +15,18 @@
 #include <string>
 #include <unordered_set>
 
-DECLARE_int32(mould_test_startup_priority);
-DECLARE_int32(mould_test_batch_size);
-DECLARE_string(mould_test_model_path);
-DECLARE_bool(mould_test_enable_debug);
-DECLARE_double(mould_test_scale);
-DECLARE_int32(mould_test_shared_int);
-DECLARE_int32(mould_test_typecheck_int);
-DECLARE_string(mould_test_unknown_gflag_key);
-DECLARE_int32(mould_test_mod_a_exec_threads);
-DECLARE_int32(mould_test_mod_b_exec_threads);
-DECLARE_string(mould_test_mod_a_topic);
-DECLARE_string(mould_test_mod_b_topic);
+DECLARE_int32(test_startup_priority);
+DECLARE_int32(test_batch_size);
+DECLARE_string(test_model_path);
+DECLARE_bool(test_enable_debug);
+DECLARE_double(test_scale);
+DECLARE_int32(test_shared_int);
+DECLARE_int32(test_typecheck_int);
+DECLARE_string(test_unknown_gflag_key);
+DECLARE_int32(test_mod_a_exec_threads);
+DECLARE_int32(test_mod_b_exec_threads);
+DECLARE_string(test_mod_a_topic);
+DECLARE_string(test_mod_b_topic);
 
 namespace {
 
@@ -46,18 +46,18 @@ void WriteFile(const fs::path& path, const std::string& content) {
 }
 
 void ResetTestGflags() {
-  google::SetCommandLineOption("mould_test_startup_priority", "0");
-  google::SetCommandLineOption("mould_test_batch_size", "0");
-  google::SetCommandLineOption("mould_test_model_path", "");
-  google::SetCommandLineOption("mould_test_enable_debug", "false");
-  google::SetCommandLineOption("mould_test_scale", "0");
-  google::SetCommandLineOption("mould_test_shared_int", "0");
-  google::SetCommandLineOption("mould_test_typecheck_int", "0");
-  google::SetCommandLineOption("mould_test_unknown_gflag_key", "");
-  google::SetCommandLineOption("mould_test_mod_a_exec_threads", "0");
-  google::SetCommandLineOption("mould_test_mod_b_exec_threads", "0");
-  google::SetCommandLineOption("mould_test_mod_a_topic", "");
-  google::SetCommandLineOption("mould_test_mod_b_topic", "");
+  google::SetCommandLineOption("test_startup_priority", "0");
+  google::SetCommandLineOption("test_batch_size", "0");
+  google::SetCommandLineOption("test_model_path", "");
+  google::SetCommandLineOption("test_enable_debug", "false");
+  google::SetCommandLineOption("test_scale", "0");
+  google::SetCommandLineOption("test_shared_int", "0");
+  google::SetCommandLineOption("test_typecheck_int", "0");
+  google::SetCommandLineOption("test_unknown_gflag_key", "");
+  google::SetCommandLineOption("test_mod_a_exec_threads", "0");
+  google::SetCommandLineOption("test_mod_b_exec_threads", "0");
+  google::SetCommandLineOption("test_mod_a_topic", "");
+  google::SetCommandLineOption("test_mod_b_topic", "");
 }
 
 std::string MinimalIoJson() {
@@ -88,8 +88,8 @@ bool TestParseSuccess_SingleModule_Minimal() {
   "modules": {
     "ModA": {
       "module_name": "ModA",
-      "resource": { "mould_test_startup_priority": 10 },
-      "module_params": { "mould_test_batch_size": 2 },
+      "resource": { "test_startup_priority": 10 },
+      "module_params": { "test_batch_size": 2 },
       "io_channels_config_path": "io.json"
     }
   }
@@ -131,13 +131,13 @@ bool TestParseSuccess_MultiModule_AllIoReachable() {
   "modules": {
     "Alpha": {
       "module_name": "Alpha",
-      "resource": { "mould_test_startup_priority": 1 },
+      "resource": { "test_startup_priority": 1 },
       "module_params": {},
       "io_channels_config_path": "a.json"
     },
     "Beta": {
       "module_name": "Beta",
-      "resource": { "mould_test_startup_priority": 1 },
+      "resource": { "test_startup_priority": 1 },
       "module_params": {},
       "io_channels_config_path": "b.json"
     }
@@ -167,7 +167,7 @@ bool TestParseSuccess_TopLevelMinloglevel() {
   "modules": {
     "ModA": {
       "module_name": "ModA",
-      "resource": { "mould_test_startup_priority": 10 },
+      "resource": { "test_startup_priority": 10 },
       "module_params": {},
       "io_channels_config_path": "io.json"
     }
@@ -198,7 +198,7 @@ bool TestParseSuccess_CommunicationSlotCount() {
   "modules": {
     "ModA": {
       "module_name": "ModA",
-      "resource": { "mould_test_startup_priority": 10 },
+      "resource": { "test_startup_priority": 10 },
       "module_params": {},
       "io_channels_config_path": "io.json"
     }
@@ -229,7 +229,7 @@ bool TestParseSuccess_CommunicationSlotPayloadBytes() {
   "modules": {
     "ModA": {
       "module_name": "ModA",
-      "resource": { "mould_test_startup_priority": 10 },
+      "resource": { "test_startup_priority": 10 },
       "module_params": {},
       "io_channels_config_path": "io.json"
     }
@@ -264,7 +264,7 @@ bool TestParseFails_InvalidCommunicationSlotCount() {
   "modules": {
     "ModA": {
       "module_name": "ModA",
-      "resource": { "mould_test_startup_priority": 10 },
+      "resource": { "test_startup_priority": 10 },
       "module_params": {},
       "io_channels_config_path": "io.json"
     }
@@ -551,7 +551,7 @@ bool TestParseFails_InvalidScalarTypeInResource() {
   "modules": {
     "K": {
       "module_name": "K",
-      "resource": { "mould_test_typecheck_int": "not-a-number" },
+      "resource": { "test_typecheck_int": "not-a-number" },
       "module_params": {},
       "io_channels_config_path": "io.json"
     }
@@ -566,7 +566,7 @@ bool TestParseFails_InvalidScalarTypeInResource() {
     return false;
   }
   return Check(
-      err.find("modules.K.resource") != std::string::npos || err.find("mould_test_typecheck_int") != std::string::npos,
+      err.find("modules.K.resource") != std::string::npos || err.find("test_typecheck_int") != std::string::npos,
       "4.14 field path");
 }
 
@@ -579,10 +579,10 @@ bool TestParseSuccess_ScalarTypesRoundTrip() {
     "T": {
       "module_name": "T",
       "resource": {
-        "mould_test_model_path": "hello",
-        "mould_test_startup_priority": 42,
-        "mould_test_scale": 1.25,
-        "mould_test_enable_debug": true
+        "test_model_path": "hello",
+        "test_startup_priority": 42,
+        "test_scale": 1.25,
+        "test_enable_debug": true
       },
       "module_params": {},
       "io_channels_config_path": "io.json"
@@ -598,19 +598,19 @@ bool TestParseSuccess_ScalarTypesRoundTrip() {
     return false;
   }
   const auto& r = out.modules[0].resource;
-  if (!Check(std::holds_alternative<std::string>(r.at("mould_test_model_path")), "4.15 string")) {
+  if (!Check(std::holds_alternative<std::string>(r.at("test_model_path")), "4.15 string")) {
     return false;
   }
-  if (!Check(std::get<std::string>(r.at("mould_test_model_path")) == "hello", "4.15 string val")) {
+  if (!Check(std::get<std::string>(r.at("test_model_path")) == "hello", "4.15 string val")) {
     return false;
   }
-  if (!Check(std::holds_alternative<std::int64_t>(r.at("mould_test_startup_priority")), "4.15 int")) {
+  if (!Check(std::holds_alternative<std::int64_t>(r.at("test_startup_priority")), "4.15 int")) {
     return false;
   }
-  if (!Check(std::holds_alternative<double>(r.at("mould_test_scale")), "4.15 float")) {
+  if (!Check(std::holds_alternative<double>(r.at("test_scale")), "4.15 float")) {
     return false;
   }
-  return Check(std::holds_alternative<bool>(r.at("mould_test_enable_debug")), "4.15 bool");
+  return Check(std::holds_alternative<bool>(r.at("test_enable_debug")), "4.15 bool");
 }
 
 // 4.16 AggregateChannels_TwoModulesNoConflict
@@ -702,13 +702,13 @@ bool TestParseFails_MultiModuleGflagKeyConflict() {
   "modules": {
     "X": {
       "module_name": "X",
-      "resource": { "mould_test_shared_int": 1 },
+      "resource": { "test_shared_int": 1 },
       "module_params": {},
       "io_channels_config_path": "x.json"
     },
     "Y": {
       "module_name": "Y",
-      "resource": { "mould_test_shared_int": 2 },
+      "resource": { "test_shared_int": 2 },
       "module_params": {},
       "io_channels_config_path": "y.json"
     }
@@ -719,7 +719,7 @@ bool TestParseFails_MultiModuleGflagKeyConflict() {
   std::string err;
   const bool ok = mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err);
   std::filesystem::remove_all(root);
-  return Check(!ok && err.find("mould_test_shared_int") != std::string::npos, "4.18");
+  return Check(!ok && err.find("test_shared_int") != std::string::npos, "4.18");
 }
 
 // 4.19 ParseFails_ModuleNameMismatchWithDictKey
@@ -752,7 +752,7 @@ bool TestErrorMessage_ContainsModuleAndFieldPath() {
   "modules": {
     "BadMod": {
       "module_name": "BadMod",
-      "resource": { "mould_test_typecheck_int": "x" },
+      "resource": { "test_typecheck_int": "x" },
       "module_params": {},
       "io_channels_config_path": "io.json"
     }
@@ -799,6 +799,85 @@ bool TestApplyFailsUnknownGflagKey() {
   return Check(!applied && err.find("this_flag_does_not_exist_xyz") != std::string::npos, "apply unknown");
 }
 
+// ApplyLaunchPlanScalarsToMatchingRegisteredGflags: skip standard resource keys without gflags
+bool TestApplyMatchingSkipsUnknownResourceKeys() {
+  const fs::path root = MakeUniqueRoot();
+  WriteFile(root / "io.json", MinimalIoJson());
+  const std::string plan = R"({
+  "modules": {
+    "X": {
+      "module_name": "X",
+      "resource": {
+        "startup_priority": 10,
+        "cpu_set": "0",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 800,
+        "test_startup_priority": 91
+      },
+      "module_params": {},
+      "io_channels_config_path": "io.json"
+    }
+  }
+})";
+  WriteFile(root / "launch_plan.txt", plan);
+  mould::config::ParsedLaunchPlan out;
+  std::string err;
+  if (!mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err)) {
+    std::filesystem::remove_all(root);
+    return Check(false, ("matching skip parse " + err).c_str());
+  }
+  google::SetCommandLineOption("test_startup_priority", "0");
+  const bool applied = mould::config::ApplyLaunchPlanScalarsToMatchingRegisteredGflags(
+      out, mould::config::LaunchPlanGflagMatchPolicy::kSkipUnknownKeys, &err);
+  std::filesystem::remove_all(root);
+  if (!Check(applied, "matching skip apply")) {
+    return false;
+  }
+  if (!Check(err.empty(), "matching skip err empty")) {
+    return false;
+  }
+  return Check(FLAGS_test_startup_priority == 91, "matching skip sets known gflag");
+}
+
+bool TestApplyMatchingFailsOnUnknownStrict() {
+  const fs::path root = MakeUniqueRoot();
+  WriteFile(root / "io.json", MinimalIoJson());
+  const std::string plan = R"({
+  "modules": {
+    "Y": {
+      "module_name": "Y",
+      "resource": {
+        "startup_priority": 10,
+        "cpu_set": "0",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 800,
+        "test_startup_priority": 1
+      },
+      "module_params": { "test_unknown_gflag_key_zzz": 1 },
+      "io_channels_config_path": "io.json"
+    }
+  }
+})";
+  WriteFile(root / "launch_plan.txt", plan);
+  mould::config::ParsedLaunchPlan out;
+  std::string err;
+  if (!mould::config::ParseLaunchPlanFile((root / "launch_plan.txt").string(), &out, &err)) {
+    std::filesystem::remove_all(root);
+    return Check(false, ("matching strict parse " + err).c_str());
+  }
+  const bool applied = mould::config::ApplyLaunchPlanScalarsToMatchingRegisteredGflags(
+      out, mould::config::LaunchPlanGflagMatchPolicy::kFailOnUnknownKeys, &err);
+  std::filesystem::remove_all(root);
+  return Check(!applied && err.find("test_unknown_gflag_key_zzz") != std::string::npos,
+               "matching strict fails on unknown module_params");
+}
+
 // 4.21 Fork_MultiChild_EachReadsOwnModuleParamsGflags
 bool TestFork_MultiChild_EachReadsOwnModuleParamsGflags() {
   const fs::path root = MakeUniqueRoot();
@@ -810,8 +889,8 @@ bool TestFork_MultiChild_EachReadsOwnModuleParamsGflags() {
       "module_name": "ModA",
       "resource": {},
       "module_params": {
-        "mould_test_mod_a_exec_threads": 11,
-        "mould_test_mod_a_topic": "topic-a"
+        "test_mod_a_exec_threads": 11,
+        "test_mod_a_topic": "topic-a"
       },
       "io_channels_config_path": "a.json"
     },
@@ -819,8 +898,8 @@ bool TestFork_MultiChild_EachReadsOwnModuleParamsGflags() {
       "module_name": "ModB",
       "resource": {},
       "module_params": {
-        "mould_test_mod_b_exec_threads": 22,
-        "mould_test_mod_b_topic": "topic-b"
+        "test_mod_b_exec_threads": 22,
+        "test_mod_b_topic": "topic-b"
       },
       "io_channels_config_path": "b.json"
     }
@@ -845,7 +924,7 @@ bool TestFork_MultiChild_EachReadsOwnModuleParamsGflags() {
     return Check(false, "4.21 fork1");
   }
   if (p1 == 0) {
-    bool ok = FLAGS_mould_test_mod_a_exec_threads == 11 && FLAGS_mould_test_mod_a_topic == "topic-a";
+    bool ok = FLAGS_test_mod_a_exec_threads == 11 && FLAGS_test_mod_a_topic == "topic-a";
     _exit(ok ? 0 : 6);
   }
   const pid_t p2 = fork();
@@ -855,7 +934,7 @@ bool TestFork_MultiChild_EachReadsOwnModuleParamsGflags() {
     return Check(false, "4.21 fork2");
   }
   if (p2 == 0) {
-    bool ok = FLAGS_mould_test_mod_b_exec_threads == 22 && FLAGS_mould_test_mod_b_topic == "topic-b";
+    bool ok = FLAGS_test_mod_b_exec_threads == 22 && FLAGS_test_mod_b_topic == "topic-b";
     _exit(ok ? 0 : 7);
   }
 
@@ -1105,6 +1184,8 @@ int main(int argc, char** argv) {
   ok = TestParseFails_ModuleNameMismatchWithDictKey() && ok;
   ok = TestErrorMessage_ContainsModuleAndFieldPath() && ok;
   ok = TestApplyFailsUnknownGflagKey() && ok;
+  ok = TestApplyMatchingSkipsUnknownResourceKeys() && ok;
+  ok = TestApplyMatchingFailsOnUnknownStrict() && ok;
   ok = TestFork_MultiChild_EachReadsOwnModuleParamsGflags() && ok;
   ok = TestResourceSchemaValidator_RejectsMissingRequiredFields() && ok;
   ok = TestResourceSchemaValidator_RejectsInvalidCpuSetAndMapsLegacyCpuId() && ok;

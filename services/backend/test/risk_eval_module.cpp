@@ -89,6 +89,8 @@ class RiskEvalModule final : public ModuleBase {
   }
 
   void OnRunIteration() override {
+    ++on_run_iteration_counter_;
+    LOG(INFO) << "[RiskEvalModule] on_run_iteration_counter=" << on_run_iteration_counter_;
     if (evaluation_count_ > 0 && evaluation_count_ % 40 == 0) {
       PublishAudit("risk_periodic_report");
     }
@@ -136,6 +138,7 @@ class RiskEvalModule final : public ModuleBase {
   int latest_image_stability_ = 70;
   std::size_t latest_image_size_bytes_ = 0;
   int evaluation_count_ = 0;
+  std::uint64_t on_run_iteration_counter_ = 0;
 };
 
 REGISTER_MOULD_MODULE_AS("RiskEvalModule", RiskEvalModule)

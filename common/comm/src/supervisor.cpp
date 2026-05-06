@@ -1,11 +1,17 @@
 #include "supervisor.hpp"
+#include "launch_plan_config.hpp"
 #include "ready_pipe_protocol.hpp"
+
+#include <glog/logging.h>
 
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <cerrno>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 
@@ -233,6 +239,112 @@ bool Supervisor::IsMasterAlive() const {
 
 SupervisorObservabilitySnapshot Supervisor::ObservabilitySnapshot() const {
   return observability_;
+}
+
+void Supervisor::RunMonitorLoop(MonitorDeps& deps) {
+  while (!deps.shutdown_requested->load()) {
+    int status = 0;
+    const pid_t pid = waitpid(-1, &status, WNOHANG);
+    if (pid == 0) {
+      std::this_thread::sleep_for(deps.idle_sleep_duration);
+      continue;
+    }
+    if (pid < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      LOG(WARNING) << "[backend_main] waitpid returned error errno=" << errno
+                   << ", leaving monitor loop";
+      break;
+    }
+
+    // ---- Log module exit: full pipe topology rebuild ----
+    if (deps.has_log_module && deps.mutable_log_module_pid != nullptr &&
+        pid == *deps.mutable_log_module_pid) {
+      LOG(ERROR) << "[backend_main] log module exited, rebuilding pipe topology";
+      ReapChildProcess(pid);
+
+      if (!deps.shutdown_requested->load() && deps.restart_log_module) {
+        std::string error;
+        if (!deps.restart_log_module(&error)) {
+          LOG(FATAL) << "[backend_main] log module restart failed: " << error;
+        }
+      }
+      continue;
+    }
+
+    // ---- Business module exit ----
+    auto pid_it = pid_to_module_.find(pid);
+    if (pid_it == pid_to_module_.end()) {
+      LOG(WARNING) << "[backend_main] received child exit for unmanaged pid=" << pid;
+      continue;
+    }
+    const std::string module_name = pid_it->second;
+
+    // SHM: take all consumers of this PID offline before reaping.
+    if (deps.take_consumers_offline) {
+      const std::uint32_t shm_offline_count =
+          deps.take_consumers_offline(static_cast<std::uint32_t>(pid));
+      LOG(INFO) << "[backend_main] shm consumers taken offline for exited pid=" << pid
+                << " module=" << module_name << " count=" << shm_offline_count;
+    }
+
+    ReapChildProcess(pid);
+    LOG(ERROR) << "[backend_main] child exited module=" << module_name
+               << " pid=" << pid << " raw_status=" << status;
+
+    // Clean exit → no restart.
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+      LOG(INFO) << "[backend_main] module exited cleanly, no restart module=" << module_name;
+      continue;
+    }
+
+    // Look up module entry for restart policy.
+    if (deps.module_entries == nullptr) {
+      continue;
+    }
+    const auto entry_it = deps.module_entries->find(module_name);
+    if (entry_it == deps.module_entries->end()) {
+      continue;
+    }
+    const auto& schema = entry_it->second.resource_schema;
+    const RestartPolicyConfig policy{
+        .restart_backoff_ms = schema.restart_backoff_ms,
+        .restart_max_retries = schema.restart_max_retries,
+        .restart_window_ms = schema.restart_window_ms,
+        .restart_fuse_ms = schema.restart_fuse_ms,
+    };
+    const std::int64_t now_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    const RestartDecision decision = HandleAbnormalChildExit(module_name, policy, now_ms);
+    LOG(INFO) << "[backend_main] restart decision module=" << module_name
+              << " should_restart=" << decision.should_restart
+              << " fuse_open=" << decision.fuse_open
+              << " delay_ms=" << decision.restart_delay_ms;
+
+    if (decision.should_restart) {
+      if (decision.restart_delay_ms > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(decision.restart_delay_ms));
+      }
+      if (deps.restart_business_module) {
+        std::string restart_error;
+        if (!deps.restart_business_module(module_name, &restart_error)) {
+          LOG(ERROR) << "[backend_main] restart launch failed module=" << module_name
+                     << " error=" << restart_error;
+        } else {
+          LOG(INFO) << "[backend_main] restart launch success module=" << module_name;
+        }
+      }
+    } else if (decision.fuse_open) {
+      LOG(INFO) << "[backend_main] fuse open for module=" << module_name
+                << ", closing log pipe write_fd";
+      if (deps.close_log_pipe) {
+        deps.close_log_pipe(module_name);
+      }
+    }
+  }
 }
 
 }  // namespace mould::comm

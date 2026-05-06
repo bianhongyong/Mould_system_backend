@@ -62,6 +62,8 @@ add_library(
   src/image_pipeline.cpp
   src/module_factory_registry.cpp
   src/module_base.cpp
+  src/module_launcher.cpp
+  src/module_launcher_utils.cpp
   src/ready_pipe_protocol.cpp
   src/restart_policy.cpp
   src/refcounted_message_store.cpp
@@ -81,6 +83,8 @@ target_include_directories(
     include
     "${MOULD_COMM_PROTO_GEN_ROOT}"
     "${MOULD_COMM_PROTO_RESOURCE_ROOT}"
+  PRIVATE
+    "${CMAKE_SOURCE_DIR}/logging/include"
 )
 target_link_libraries(comm_core PUBLIC common_build_flags config_core)
 if(TARGET protobuf::libprotobuf)

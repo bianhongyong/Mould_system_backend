@@ -26,10 +26,9 @@ namespace mould::config {
 // launch plan file passed to ParseLaunchPlanFile.
 //
 // Multi-process / gflags (integration contract): call ParseLaunchPlanFile in the parent
-// process first; then ApplyLaunchPlanScalarsToRegisteredGflags (or equivalent per-key
-// SetCommandLineOption) before fork(2). Child processes inherit the updated flag values.
-// Re-parsing in children is optional if the same launch plan path remains valid; tests cover
-// the parent-first assignment order.
+// process first; then ApplyLaunchPlanScalarsToMatchingRegisteredGflags (skip unknown keys)
+// or ApplyLaunchPlanScalarsToRegisteredGflags (strict, tests) before fork(2). Child processes
+// inherit updated flag values. Launch plan keys must match registered gflag names exactly.
 
 // Scalar values parsed from JSON in `resource` / `module_params` (task 2.2).
 using LaunchPlanScalar = std::variant<std::string, std::int64_t, double, bool>;
@@ -96,5 +95,34 @@ bool ParseLaunchPlanFile(
 bool ApplyLaunchPlanScalarsToRegisteredGflags(
     const ParsedLaunchPlan& plan,
     std::string* out_error);
+
+// 将 launch plan 中各模块的 `resource` 与 `module_params` 键名与已注册的 gflags 名称对齐：
+// 若存在同名 flag 则 `SetCommandLineOption`；否则按 policy 跳过或报错。
+// 约定：仅当某键需要被子进程通过 fork 继承时，才在对应模块的 `*_gflags.cpp` 中 DEFINE；
+// 标准 resource 字段（startup_priority、cpu_set、restart_*、ready_timeout_ms）始终跳过，
+// 由 supervisor 使用 ParsedModuleLaunchEntry::resource_schema，不参与 gflag 绑定。
+enum class LaunchPlanGflagMatchPolicy {
+  kSkipUnknownKeys,
+  kFailOnUnknownKeys,
+};
+
+bool ApplyLaunchPlanScalarsToMatchingRegisteredGflags(
+    const ParsedLaunchPlan& plan,
+    LaunchPlanGflagMatchPolicy policy,
+    std::string* out_error);
+
+// Sets environment variables (MOULD_MODULE_CHANNEL_CONFIGS, MOULD_SHM_SLOT_COUNT,
+// MOULD_SHM_SLOT_PAYLOAD_BYTES, MOULD_FORK_INHERITANCE_TOKEN) from a parsed launch
+// plan. Fills out_module_config_files with (module_name, io_config_path) pairs for
+// downstream SHM provisioning. Returns true on success.
+bool SetupRuntimeEnvironmentFromLaunchPlan(
+    const std::unordered_map<std::string, ParsedModuleLaunchEntry>& module_entries,
+    const ParsedLaunchPlan& launch_plan,
+    std::vector<std::pair<std::string, std::string>>* out_module_config_files,
+    std::string* out_error);
+
+// Resolve launch plan file path from command-line arguments.
+// Requires argv[1] to be a non-empty path. Returns empty string when missing.
+std::string ResolveLaunchPlanPath(int argc, char** argv);
 
 }  // namespace mould::config

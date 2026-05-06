@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <glog/logging.h>
 #include <sstream>
 #include <string>
 
@@ -84,6 +85,8 @@ class PathPlanModule final : public ModuleBase {
   }
 
   void OnRunIteration() override {
+    ++on_run_iteration_counter_;
+    LOG(INFO) << "[PathPlanModule] on_run_iteration_counter=" << on_run_iteration_counter_;
     if (plan_count_ > 0 && plan_count_ % 30 == 0) {
       PublishAudit("plan_periodic_report");
     }
@@ -118,6 +121,7 @@ class PathPlanModule final : public ModuleBase {
   int latest_risk_score_ = 20;
   int coordinator_epoch_ = 0;
   int plan_count_ = 0;
+  std::uint64_t on_run_iteration_counter_ = 0;
 };
 
 REGISTER_MOULD_MODULE_AS("PathPlanModule", PathPlanModule)

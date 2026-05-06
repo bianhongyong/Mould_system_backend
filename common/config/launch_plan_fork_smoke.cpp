@@ -13,7 +13,7 @@
 #include <random>
 #include <string>
 
-DECLARE_int32(mould_test_startup_priority);
+DECLARE_int32(test_startup_priority);
 
 namespace {
 
@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
   "modules": {
     "SmokeMod": {
       "module_name": "SmokeMod",
-      "resource": { "mould_test_startup_priority": 77 },
+      "resource": { "test_startup_priority": 77 },
       "module_params": {},
       "io_channels_config_path": "channels/smoke_io.json"
     }
@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
     return 4;
   }
   if (child == 0) {
-    const bool ok = FLAGS_mould_test_startup_priority == 77;
+    const bool ok = FLAGS_test_startup_priority == 77;
     _exit(ok ? 0 : 5);
   }
 

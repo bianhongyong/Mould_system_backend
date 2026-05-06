@@ -1,9 +1,30 @@
 {
-  "minloglevel": 1,
+  "minloglevel": 0,
   "communication": {
     "shm_slot_count": 512
   },
   "modules": {
+    "Logging_module": {
+      "module_name": "Logging_module",
+      "resource": {
+        "startup_priority": 1,
+        "cpu_set": "0",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 800
+      },
+      "module_params": {
+        "log_archive_dir": "/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/log/archive",
+        "log_tmp_dir": "/media/honeywell/D/bhy/vibe_coding/Mould_system_backend/log/",
+        "log_queue_size": 4096,
+        "log_max_file_size": 10485760,
+        "log_max_file_count": 10,
+        "log_compression_enabled": false
+      },
+      "io_channels_config_path": "logging_module_io.json"
+    },
     "SensorFusionModule": {
       "module_name": "SensorFusionModule",
       "resource": {

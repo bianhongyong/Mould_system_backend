@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <glog/logging.h>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -104,6 +105,11 @@ class ActuatorCoordModule final : public ModuleBase {
     return audit_sink_ok && plan_ok && risk_ok && alert_ok && image_ok;
   }
 
+  void OnRunIteration() override {
+    ++on_run_iteration_counter_;
+    LOG(INFO) << "[ActuatorCoordModule] on_run_iteration_counter=" << on_run_iteration_counter_;
+  }
+
   void EmitCommand(const std::string& trigger) {
     ++command_count_;
     const int capped_speed = std::max(5, planned_speed_limit_ - latest_risk_score_ / 4 - fault_level_ * 8);
@@ -125,6 +131,7 @@ class ActuatorCoordModule final : public ModuleBase {
     Publish("ActuatorCoordAuditEvent", ToPayload(audit.str()));
   }
 
+  std::uint64_t on_run_iteration_counter_ = 0;
   std::atomic<bool> running_{false};
   std::thread heartbeat_thread_;
   int epoch_ = 0;

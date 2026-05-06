@@ -117,6 +117,8 @@ class SensorFusionModule final : public ModuleBase {
   }
 
   void OnRunIteration() override {
+    ++on_run_iteration_counter_;
+    LOG(INFO) << "[SensorFusionModule] on_run_iteration_counter=" << on_run_iteration_counter_;
     if (publish_seq_ % 25 == 0) {
       PublishAudit("fusion_checkpoint");
     }
@@ -164,6 +166,7 @@ class SensorFusionModule final : public ModuleBase {
   static constexpr auto kTelemetryBurstInterval = std::chrono::milliseconds(50);
   static constexpr auto kImagePublishInterval = std::chrono::milliseconds(300);
 
+  std::uint64_t on_run_iteration_counter_ = 0;
   std::atomic<bool> running_{false};
   std::thread producer_;
   int publish_seq_ = 0;

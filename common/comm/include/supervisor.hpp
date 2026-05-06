@@ -2,6 +2,8 @@
 
 #include "restart_policy.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -9,6 +11,10 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+namespace mould::config {
+struct ParsedModuleLaunchEntry;
+}  // namespace mould::config
 
 namespace mould::comm {
 
@@ -83,6 +89,42 @@ class Supervisor {
       std::int64_t now_ms);
   bool IsMasterAlive() const;
   SupervisorObservabilitySnapshot ObservabilitySnapshot() const;
+
+  /// Context for RunMonitorLoop. Members with std::function are optional —
+  /// set them to nullptr / empty to skip that behavior.
+  struct MonitorDeps {
+    /// Shared shutdown flag (set by signal handler).
+    std::atomic<bool>* shutdown_requested = nullptr;
+
+    /// Module entry lookup for restart policy decisions.
+    const std::unordered_map<std::string, mould::config::ParsedModuleLaunchEntry>* module_entries = nullptr;
+
+    /// Called before restart decision to take SHM consumers offline.
+    /// Receives dead PID, returns count of offlined consumers.
+    std::function<std::uint32_t(std::uint32_t dead_pid)> take_consumers_offline;
+
+    /// Launch a business module for restart.
+    /// Takes module name, returns true on success.
+    std::function<bool(const std::string& module_name, std::string* error)> restart_business_module;
+
+    /// Log module support (optional, only used when has_log_module is true).
+    bool has_log_module = false;
+    pid_t* mutable_log_module_pid = nullptr;
+
+    /// Full log module restart: rebuild pipes, fork, wait ready.
+    std::function<bool(std::string* error)> restart_log_module;
+
+    /// Close a business module's log pipe when its fuse opens.
+    std::function<void(const std::string& module_name)> close_log_pipe;
+
+    /// Sleep duration between idle poll cycles (default 50ms).
+    std::chrono::milliseconds idle_sleep_duration{50};
+  };
+
+  /// Run the main monitor loop: wait for child exit events, handle log module
+  /// restart, business module restart with backoff/fuse. Returns when
+  /// shutdown is requested or waitpid returns an unexpected error.
+  void RunMonitorLoop(MonitorDeps& deps);
 
  private:
   mutable std::mt19937 rng_;

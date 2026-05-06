@@ -14,6 +14,7 @@ include(cmake/third_party.cmake)
 enable_testing()
 
 add_subdirectory(common)
+add_subdirectory(logging)
 add_subdirectory(services/backend)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/services/broker/CMakeLists.txt")
   add_subdirectory(services/broker)
