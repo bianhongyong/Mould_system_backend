@@ -4,7 +4,7 @@
 
 ## 架构概述
 
-采用多进程架构，主进程 `backend_main` fork 并监管多个业务子模块进程，子进程之间通过 POSIX 共享内存 IPC 通信。
+采用多进程架构，主进程 `backend_main` fork 并监管多个业务子模块进程，子进程之间通过 POSIX 共享内存 IPC 通信。同时包含独立 HTTP 网关进程对外提供 RESTful 帧入口 API。
 
 ```
 backend_main (主进程)
@@ -15,6 +15,7 @@ backend_main (主进程)
   ├── ready-pipe 协议: 等待子进程 READY 信号
   ├── 日志管道: 每进程分配独立匿名 pipe，日志模块独占读端
   └── 子进程 (模块):
+       ├── HttpGatewayModule      — HTTP 帧入口网关（接收外部帧数据并发布至 SHM 总线）
        ├── LoggingModule          — 统一日志管道采集与异步落盘（启动优先级最高）
        ├── FrameSourceModule      — 发布帧（测试模块）
        ├── FeatureExtractModule   — 消费帧、提取特征（测试模块）
@@ -23,6 +24,12 @@ backend_main (主进程)
        ├── PathPlanModule         — 路径规划（测试模块）
        ├── ActuatorCoordModule    — 执行器协调（测试模块）
        └── ... (均继承 ModuleBase)
+
+HTTP 网关进程 (gateway):
+  ├── muduo HTTP 服务器 — RESTful 帧入口 API
+  ├── 请求验证与限流、UUID 生成、指标记录
+  ├── OSS 对象存储上传（文件/本地/空上传器）
+  └── 帧元数据扩展解析（缺陷检测、质量检测、表面计量）
 ```
 
 ## 核心特性
@@ -33,6 +40,7 @@ backend_main (主进程)
 - **通道拓扑配置**: 每个模块以 `.txt` 文件声明 I/O 通道，系统自动聚合验证（无重复生产者、无参数冲突）并驱动共享内存段大小计算
 - **无锁环形缓冲区**: 单生产者、多消费者，两阶段提交（预留 → 拷贝 → 提交），每个消费者拥有独立游标
 - **启动计划配置**: `launch_plan.json` 指定模块列表、资源分配（CPU 亲和性、优先级、重启策略）和通道配置路径
+- **HTTP 入口网关**: 基于 muduo 的独立 HTTP 网关进程，提供帧数据接收、请求验证、限流、OSS 对象存储上传及帧元数据扩展解析
 - **统一日志落盘管线**: 基于独立匿名 pipe 的进程间日志传输，LoggingModule 专有进程负责采集、异步落盘、文件滚动与压缩，业务进程不阻塞、不中继
   - **LogCollector**: epoll 多路复用 pipe 读端，按行缓冲重组，背压下丢弃并计数
   - **LogDumpManager**: 异步写线程、有界队列、文件滚动（大小/时间）、可选压缩与 tmpfs 两阶段写入
@@ -45,10 +53,12 @@ backend_main (主进程)
 |------|------|
 | `common/comm/` | 通信中间件：共享内存 pub/sub 总线、模块基类、监管器、日志落盘管线 |
 | `common/config/` | 配置解析器：启动配置 (JSON)、通道拓扑 (txt) |
-| `common/include/` | 通用工具：日志初始化、测试辅助 |
+| `common/include/` | 通用工具：日志初始化、测试辅助、线程池 |
 | `common/src/` | 通用工具实现：子进程日志初始化 |
-| `common/proto/` | IPC 消息的 Protobuf 定义 |
-| `services/backend/` | 主进程入口点、模块实现、模块 gflags 注册 |
+| `common/proto/` | IPC 消息的 Protobuf 定义（含 gateway_frame_ingress 及 image_meta_extensions） |
+| `gate/` | HTTP 入口网关：muduo HTTP 服务器、请求处理器、OSS 上传客户端、模块实现与测试 |
+| `services/backend/` | 主进程入口点、模块实现 |
+| `logging/` | 日志落盘管线：LoggingModule 实现、gflags 注册 |
 | `tests/` | 集成测试数据和 proto 定义 |
 | `cmake/` | 构建配置：平台标志、第三方依赖解析 |
 | `docs/` | 架构文档、构建说明 |
