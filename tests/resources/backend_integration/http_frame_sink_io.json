@@ -1,0 +1,9 @@
+{
+  "input_channel": {
+    "ImageFrameIngress": {
+      "slot_payload_bytes": "4194304"
+    }
+  },
+  "output_channel": {
+  }
+}

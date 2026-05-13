@@ -20,18 +20,6 @@ constexpr std::size_t Align8(std::size_t value) {
 
 constexpr std::uint32_t kCursorAdvanceFallbackReclaimInterval = 64;
 
-constexpr std::uint64_t PackSlotControl(SlotState state, std::uint64_t sequence) {
-  return (sequence << 32U) | static_cast<std::uint64_t>(static_cast<std::uint32_t>(state));
-}
-
-constexpr SlotState UnpackSlotState(std::uint64_t control) {
-  return static_cast<SlotState>(static_cast<std::uint32_t>(control & 0xFFFFFFFFULL));
-}
-
-constexpr std::uint64_t UnpackSlotSequence(std::uint64_t control) {
-  return control >> 32U;
-}
-
 }  // namespace
 
 std::size_t ComputeRingLayoutSizeBytes(std::uint32_t slot_count, std::uint32_t consumer_capacity) {

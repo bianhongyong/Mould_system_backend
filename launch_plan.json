@@ -31,6 +31,30 @@
       },
       "module_params": {},
       "io_channels_config_path": "tests/resources/backend_integration/feature_extract_io.json"
+    },
+    "HttpGatewayModule": {
+      "module_name": "HttpGatewayModule",
+      "resource": {
+        "startup_priority": 5,
+        "cpu_set": "1",
+        "restart_backoff_ms": 20,
+        "restart_max_retries": 3,
+        "restart_window_ms": 1000,
+        "restart_fuse_ms": 3000,
+        "ready_timeout_ms": 500
+      },
+      "module_params": {
+        "gateway_listen_addr": "0.0.0.0",
+        "gateway_port": "8080",
+        "gateway_max_connections": "10000",
+        "gateway_max_body_size": "52428800",
+        "gateway_max_rate": "10000.0",
+        "gateway_qps_limit": "10000.0",
+        "gateway_io_threads": "4",
+        "gateway_timeout_ms": "5000",
+        "gateway_oss_retry": "3"
+      },
+      "io_channels_config_path": "gate/config/http_gateway_io.json"
     }
   }
 }

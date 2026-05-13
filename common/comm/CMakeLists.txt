@@ -4,6 +4,10 @@ set(MOULD_COMM_PROTO_GEN_ROOT "${CMAKE_BINARY_DIR}/proto")
 
 set(MOULD_COMM_PROTO_INPUTS
   "${MOULD_COMM_COMMON_PROTO_ROOT}/image_frame.proto"
+  "${MOULD_COMM_COMMON_PROTO_ROOT}/gateway_frame_ingress.proto"
+  "${MOULD_COMM_COMMON_PROTO_ROOT}/image_meta_extensions/defect_detection.proto"
+  "${MOULD_COMM_COMMON_PROTO_ROOT}/image_meta_extensions/quality_inspection.proto"
+  "${MOULD_COMM_COMMON_PROTO_ROOT}/image_meta_extensions/surface_metering.proto"
   "${MOULD_COMM_PROTO_RESOURCE_ROOT}/sensor_fusion/sensor_fusion_telemetry.proto"
   "${MOULD_COMM_PROTO_RESOURCE_ROOT}/risk_eval/risk_eval_core.proto"
   "${MOULD_COMM_PROTO_RESOURCE_ROOT}/path_plan/path_plan_core.proto"
@@ -13,6 +17,10 @@ set(MOULD_COMM_PROTO_INPUTS
 
 set(MOULD_COMM_PROTO_GENERATED_SRCS
   "${MOULD_COMM_PROTO_GEN_ROOT}/image_frame.pb.cc"
+  "${MOULD_COMM_PROTO_GEN_ROOT}/gateway_frame_ingress.pb.cc"
+  "${MOULD_COMM_PROTO_GEN_ROOT}/image_meta_extensions/defect_detection.pb.cc"
+  "${MOULD_COMM_PROTO_GEN_ROOT}/image_meta_extensions/quality_inspection.pb.cc"
+  "${MOULD_COMM_PROTO_GEN_ROOT}/image_meta_extensions/surface_metering.pb.cc"
   "${MOULD_COMM_PROTO_GEN_ROOT}/sensor_fusion/sensor_fusion_telemetry.pb.cc"
   "${MOULD_COMM_PROTO_GEN_ROOT}/risk_eval/risk_eval_core.pb.cc"
   "${MOULD_COMM_PROTO_GEN_ROOT}/path_plan/path_plan_core.pb.cc"
@@ -22,6 +30,10 @@ set(MOULD_COMM_PROTO_GENERATED_SRCS
 
 set(MOULD_COMM_PROTO_GENERATED_HDRS
   "${MOULD_COMM_PROTO_GEN_ROOT}/image_frame.pb.h"
+  "${MOULD_COMM_PROTO_GEN_ROOT}/gateway_frame_ingress.pb.h"
+  "${MOULD_COMM_PROTO_GEN_ROOT}/image_meta_extensions/defect_detection.pb.h"
+  "${MOULD_COMM_PROTO_GEN_ROOT}/image_meta_extensions/quality_inspection.pb.h"
+  "${MOULD_COMM_PROTO_GEN_ROOT}/image_meta_extensions/surface_metering.pb.h"
   "${MOULD_COMM_PROTO_GEN_ROOT}/sensor_fusion/sensor_fusion_telemetry.pb.h"
   "${MOULD_COMM_PROTO_GEN_ROOT}/risk_eval/risk_eval_core.pb.h"
   "${MOULD_COMM_PROTO_GEN_ROOT}/path_plan/path_plan_core.pb.h"
@@ -45,6 +57,10 @@ add_custom_command(
           --proto_path=${MOULD_COMM_PROTO_RESOURCE_ROOT}
           --cpp_out=${MOULD_COMM_PROTO_GEN_ROOT}
           ${MOULD_COMM_COMMON_PROTO_ROOT}/image_frame.proto
+          ${MOULD_COMM_COMMON_PROTO_ROOT}/gateway_frame_ingress.proto
+          ${MOULD_COMM_COMMON_PROTO_ROOT}/image_meta_extensions/defect_detection.proto
+          ${MOULD_COMM_COMMON_PROTO_ROOT}/image_meta_extensions/quality_inspection.proto
+          ${MOULD_COMM_COMMON_PROTO_ROOT}/image_meta_extensions/surface_metering.proto
           ${MOULD_COMM_PROTO_RESOURCE_ROOT}/sensor_fusion/sensor_fusion_telemetry.proto
           ${MOULD_COMM_PROTO_RESOURCE_ROOT}/risk_eval/risk_eval_core.proto
           ${MOULD_COMM_PROTO_RESOURCE_ROOT}/path_plan/path_plan_core.proto

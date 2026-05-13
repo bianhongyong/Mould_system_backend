@@ -92,6 +92,21 @@ struct RingHealthMetrics {
   std::uint64_t consumer_offline_events = 0;
 };
 
+/// Pack {sequence, state} into a 64-bit control word for lock-free slot state management.
+inline std::uint64_t PackSlotControl(SlotState state, std::uint64_t sequence) {
+  return (sequence << 32U) | static_cast<std::uint64_t>(static_cast<std::uint32_t>(state));
+}
+
+/// Extract SlotState from a control word packed by PackSlotControl.
+inline SlotState UnpackSlotState(std::uint64_t control) {
+  return static_cast<SlotState>(static_cast<std::uint32_t>(control & 0xFFFFFFFFULL));
+}
+
+/// Extract sequence from a control word packed by PackSlotControl.
+inline std::uint64_t UnpackSlotSequence(std::uint64_t control) {
+  return control >> 32U;
+}
+
 /// Non-owning view into a versioned ring layout in **process-shared** memory. Publication and
 /// consumer membership rely on atomics and CAS in `RingHeader` / tables here, not on outer runtime
 /// structures holding per-channel mutable publish state.

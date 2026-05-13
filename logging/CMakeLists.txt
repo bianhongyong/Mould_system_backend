@@ -1,17 +1,20 @@
 add_library(
-  logging_core
+  logging_core OBJECT
   src/log_collector.cpp
   src/log_dump_manager.cpp
   src/log_pipe_manager.cpp
   src/log_sink.cpp
   src/logging_fork_gflags.cpp
   src/subprocess_log_init.cpp
+  gflags/logging_module_gflags.cpp
+  module/logging_module.cpp
 )
 
 target_include_directories(
   logging_core
   PUBLIC
     include
+    "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 target_link_libraries(
   logging_core

@@ -30,7 +30,7 @@ cmake --build build-clean --target backend_all
 ctest --test-dir build-clean --output-on-failure
 ```
 
-测试标签: `unit`, `shm_segment`, `shm_ring_buffer`, `shm_pubsub`, `channel_topology_config`, `launch_plan_config`, `multiprocess`, `module_base`, `supervisor`, `module_factory_registry`, `sync`, `backpressure`, `control_plane`, `membership`, `proto`, `smoke`, `third-party`
+测试标签: `unit`, `shm_segment`, `shm_ring_buffer`, `shm_pubsub`, `channel_topology_config`, `launch_plan_config`, `multiprocess`, `module_base`, `supervisor`, `module_factory_registry`, `sync`, `backpressure`, `control_plane`, `membership`, `proto`, `smoke`
 
 ## 代码库架构
 
@@ -44,7 +44,9 @@ ctest --test-dir build-clean --output-on-failure
 - `common/config/` — 配置解析器：启动配置 (JSON)、通道拓扑 (txt)
 - `common/include/` — 通用工具：日志、测试辅助
 - `common/proto/` — IPC 消息的 Protobuf 定义
-- `services/backend/` — 主进程入口点和模块实现
+- `services/backend/` — 主进程入口点和测试模块
+- `gate/` — HTTP 网关：`module/`（模块实现）、`gflags/`（模块 gflags）、`handler/`（请求处理器）、`http/`（HTTP 服务器）、`oss/`（OSS 客户端）
+- `logging/` — 日志管线：`module/`（日志模块实现）、`gflags/`（模块 gflags）、`src/`（日志基础设施）、`include/`（日志接口）
 - `tests/` — 集成测试数据和 proto 定义
 - `cmake/` — 构建配置：平台标志、第三方依赖解析、自定义 Find 模块
 - `docs/` — 架构文档、构建说明、通道拓扑运行时文档
@@ -91,6 +93,31 @@ backend_main (主进程)
 
 必需: protobuf, gRPC, abseil, gflags, glog, Boost (filesystem/system/thread), OpenCV, ONNX Runtime, MySQL 客户端, RabbitMQ C 客户端, OSS SDK, moduo
 
+### 配置原则
+
+**业务模块配置必须通过 GFLAGS + launch_plan.json module_params 传递，禁止使用环境变量。**
+
+- `launch_plan.json` 中每个模块的 `module_params` 字段存放业务参数
+- `main.cpp` 通过 `ApplyLaunchPlanScalarsToMatchingRegisteredGflags()` 将 `module_params` 键值对注入匹配的 `FLAGS_*`
+- 模块代码直接读取 `FLAGS_*`（gflags），不得调用 `std::getenv`
+- 基础设施/系统层参数（如 `MOULD_MODULE_CHANNEL_CONFIGS`、`MOULD_SHM_SLOT_COUNT`）仍可使用环境变量，业务配置一律走 gflags
+
+### 错误处理（禁止 try/catch）
+
+**本仓库自研业务代码禁止使用 `try` / `catch` 处理错误**（新增与重构均应遵守）。
+
+- **约定**：用返回值表达成败与原因，并优先采用 **Boost** 惯用错误类型（例如 `boost::system::error_code` 作为返回值或传出参数，或与所用 Boost 组件配套的 `error_code` 约定），由调用方分支处理，不依赖异常控制流。
+- **日志**：进入失败分支时必须 **打印日志**（使用本仓库既有 `LOG` / `VLOG` 等宏），携带足够上下文，禁止静默失败。
+- **测试**：对错误路径的断言应基于返回值或错误码；不因本规范而要求对第三方库行为使用 `EXPECT_THROW` 等例外断言，但自研接口不应以抛异常为契约。
+
+### 构建规范：GFLAGS 编译规则
+
+**模块的 `DEFINE_*` / `DECLARE_*` 必须编译进该模块所属的静态库或动态库，不得直接列在 `add_executable(backend_main ...)` 的源文件中。**
+
+- 每个业务模块的 gflags 源码（如 `gateway_module_gflags.cpp`）放在模块目录下的 `gflags/` 子目录中
+- 在模块的 CMakeLists.txt 中通过 `target_sources` 或 `add_library` 加入该文件
+- 测试模块的 gflags 可直接定义在测试 `.cpp` 文件中，无需单独 gflags 源文件
+
 ### 测试基础设施
 
-测试使用 Google Test (`GTest::gtest`)。测试定义在组件级别（common/comm/、common/config/），通过 `gtest_discover_tests()` 发现。`third_party_probe` 目标验证所有第三方依赖正确链接。集成测试数据位于 `tests/resources/backend_integration/`。特定领域（sensor_fusion、risk_eval、path_plan、actuator_coord）的测试 proto 类型位于 `tests/resources/proto/`。
+测试使用 Google Test (`GTest::gtest`)。测试定义在组件级别（common/comm/、common/config/），通过 `gtest_discover_tests()` 发现。集成测试数据位于 `tests/resources/backend_integration/`。特定领域（sensor_fusion、risk_eval、path_plan、actuator_coord）的测试 proto 类型位于 `tests/resources/proto/`。

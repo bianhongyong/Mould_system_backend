@@ -118,6 +118,17 @@ bool ModuleBase::Run() {
     OnRunIteration();
   }
 
+  // Stop the subscriber pump before the final drain to prevent the background
+  // thread from pushing new callbacks into the queue after we've already
+  // drained it. Without this, callbacks queued between DrainAll and the pump
+  // thread stopping are silently dropped — causing lost messages on shutdown.
+  if (bus_) {
+    auto shm_bus = std::dynamic_pointer_cast<ShmBusRuntime>(bus_);
+    if (shm_bus) {
+      shm_bus->StopAllSubscribers();
+    }
+  }
+
   callback_queue_.DrainAll();
   stage_ = LifecycleStage::kStopped;
   return true;

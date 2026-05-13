@@ -1,0 +1,18 @@
+确认：ShmBusControlPlane 自动纳入验证
+========================================
+
+验证文件: common/config/src/channel_topology_config.cpp
+
+函数 BuildChannelTopologyIndexFromFiles (第 732-746 行):
+  bool BuildChannelTopologyIndexFromFiles(
+      const std::vector<std::pair<std::string, std::string>>& module_config_files,
+      ChannelTopologyIndex* out_topology,
+      std::string* out_error)
+
+该函数接受 module_name + config_path 对组成的 vector，遍历所有条目逐一调用
+ParseModuleChannelConfigJsonFile 解析模块的通道声明。它不硬编码任何模块名称，
+完全通用。
+
+因此，HttpGatewayModule 在 launch_plan.json 中配置 io_channels_config_path
+指向 gate/config/http_gateway_io.json 后，控制平面启动时会自动扫描该文件的
+input_channel / output_channel 声明并构建通道拓扑索引。无需修改 channel_topology_config.cpp。

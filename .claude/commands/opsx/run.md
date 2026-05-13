@@ -61,7 +61,9 @@ state: "IMPLEMENT"           # 当前状态机状态
 
 ### 4. 进入编排循环
 
-按以下状态机循环，直到所有任务完成且验证通过:
+按以下状态机循环。
+
+**每个任务的循环:**
 
 ```
           IMPLEMENT
@@ -72,6 +74,12 @@ state: "IMPLEMENT"           # 当前状态机状态
           (通过)
               │
               ▼
+       下一任务/全部完成
+```
+
+**所有任务完成后的最终验证:**
+
+```
           VERIFY
               │
       ┌───────┼───────┐
@@ -80,18 +88,22 @@ state: "IMPLEMENT"           # 当前状态机状态
    无警告    │       │
       │      │       │
       ▼      ▼       ▼
-   完成   FIX_VERIFY ──→ TEST
+   完成   FIX_VERIFY ──→ TEST(受影响模块)
 ```
 
 **退出条件:**
-- TEST 通过 AND VERIFY 无严重+无警告 → 当前任务完成，取下一任务
-- 所有任务完成 → 进入收尾
+- 单任务: TEST 通过 → 当前任务完成，取下一任务
+- 全部任务完成 AND 最终 VERIFY 无严重+无警告 → 进入收尾
 
 **单个任务重试上限:** 5 次。超过后暂停并询问用户。
 
+**TEST 触发时机:** 某个模块开发完成并写好单元测试后才运行测试。没写完单测、没到模块边界，不触发 TEST。IMPLEMENT 阶段可以连续完成多个相关文件后再统一测试。
+
+**单测编写节奏:** 每实现完一个模块，必须立即编写 tasks.md 中该任务对应的单元测试。不允许攒到所有模块实现完再一起补单测。
+
 ### 5. 状态: IMPLEMENT — 派发 Implementer
 
-**时机:** 每个新任务开始，或从 FIX_TEST/FIX_VERIFY 状态转入。
+**时机:** 每个新任务开始，或从 FIX_TEST 状态转入（任务级）；最终验证不通过时从 FIX_VERIFY 转入（全局级）。
 
 **主 Agent 组装中转包 A:**
 
@@ -141,7 +153,14 @@ Agent(
 
 ### 6. 状态: TEST — 派发 TestRunner
 
-**时机:** IMPLEMENT/FIX_TEST/FIX_VERIFY 完成后。
+**时机:** 某个模块开发完成且单元测试编写完成后。IMPLEMENT 可以连续推进多个文件，不必每改一个文件就跑测试。
+
+**触发规则:**
+- 单测文件（`*_test.cpp` 或 `tests/` 目录下对应文件）已创建/修改
+- 对应模块的实现文件已修改
+- 主 Agent 判断满足以上条件后，方可转入 TEST
+
+如果 IMPLEMENT 只改了头文件、配置文件或无对应测试的辅助代码，**跳过 TEST** 直接进入下一任务。
 
 **主 Agent 组装中转包 B:**
 
@@ -181,11 +200,11 @@ Agent(
 **收集返回值:** 解析 pass/fail 和错误摘要。
 - 如果 **编译失败** → 转入 FIX_BUILD 状态（视为 FIX_TEST 的特例）
 - 如果 **测试失败** → 转入 FIX_TEST 状态，将失败信息填入中转包 A 的 `failure_context`
-- 如果**全部通过** → 转入 VERIFY 状态
+- 如果**全部通过** → 当前任务完成，标记 `- [ ]` → `- [x]`，取下一任务。如果所有任务已完成 → 转入最终 VERIFY（步骤 9）
 
-### 7. 状态: VERIFY — 派发 Verifier
+### 7. 状态: VERIFY — 派发 Verifier（仅在所有任务完成后执行一次）
 
-**时机:** TEST 全部通过后。
+**时机:** 所有任务的 TEST 全部通过后，做一次最终需求对齐验证。
 
 **主 Agent 组装中转包 C:**
 
@@ -197,11 +216,11 @@ Agent(
     "tasks": "openspec/changes/<name>/tasks.md"
   },
   "changes_since_last_verify": {
-    "files": ["<本轮修改的文件>"],
-    "summary": "<本任务实现摘要>",
+    "files": ["<所有本次变更涉及的文件>"],
+    "summary": "<全部实现摘要>",
     "previous_report": "<上次验证报告摘要，无则 null>"
   },
-  "completed_tasks_in_this_round": ["<task-id>"]
+  "completed_tasks": ["<所有已完成的 task-id>"]
 }
 ```
 
@@ -216,27 +235,32 @@ Agent(
 
 **收集返回值:** 解析审查报告，提取严重/警告/建议列表。
 
-- 如果**无严重且无警告** → 标记当前任务完成（`- [ ]` → `- [x]`），取下一任务
-- 如果有**严重或警告** → 转入 FIX_VERIFY 状态，将问题列表填入中转包 A 的 `failure_context`
+- 如果**无严重且无警告** → 所有任务通过最终验证，进入收尾
+- 如果有**严重或警告** → 转入 FIX_VERIFY 状态，将问题列表填入中转包 A 的 `failure_context`，由 Implementer 修复后重新跑受影响模块的 TEST，再 VERIFY
 
 ### 8. 状态: FIX_TEST / FIX_BUILD / FIX_VERIFY
 
 这些状态都派发给 **Implementer**（唯一能写代码的 Agent），区别在 `mode` 字段:
 
-| 状态 | mode 值 | failure_context.source |
-|------|---------|----------------------|
-| FIX_TEST | `fix_test` | TestRunner |
-| FIX_BUILD | `fix_build` | TestRunner (编译错误) |
-| FIX_VERIFY | `fix_verify` | Verifier |
+| 状态 | mode 值 | failure_context.source | 修复后流程 |
+|------|---------|------------------------|-----------|
+| FIX_TEST | `fix_test` | TestRunner | → TEST |
+| FIX_BUILD | `fix_build` | TestRunner (编译错误) | → TEST |
+| FIX_VERIFY | `fix_verify` | Verifier | → IMPLEMENT → TEST → (全部通过后) VERIFY |
 
 重试计数器 +1。超过 5 次 → 暂停并报告用户。
 
-### 9. 所有任务完成
+FIX_VERIFY 是全局级别的修复：修复完成后需要重新跑受影响模块的 TEST，全部通过后再 VERIFY。
 
-确认:
-- 所有 tasks.md 中的复选框为 `[x]`
-- 最终 TEST 通过
-- 最终 VERIFY 无严重和警告
+### 9. 所有任务完成 → 最终 VERIFY
+
+所有单任务 TEST 通过后:
+
+1. 确认 tasks.md 中所有复选框为 `[x]`
+2. **执行最终 VERIFY**（见步骤 7），做一次全局需求对齐验证
+3. 根据 VERIFY 结果:
+   - 无严重+无警告 → 进入收尾
+   - 有严重/警告 → FIX_VERIFY → IMPLEMENT → TEST(受影响模块) → 再次 VERIFY
 
 展示汇总:
 
@@ -295,11 +319,12 @@ Agent(
 ## 要求
 
 1. 只做任务要求的事情，不要做额外重构或"顺便优化"
-2. 修改完代码后用 Bash 验证编译通过: cmake --build build --target backend_all
-3. 编译通过后，列出你修改了哪些文件，简要说明改了什么
-4. **不要运行测试**，那不是你的职责
-5. **不要运行 openspec verify**，那不是你的职责
-6. 不要与其他子 Agent 通信，有任何问题通过主 Agent 转达
+2. **实现模块的同时必须写对应的单元测试**，不要只写实现不写测试
+3. 修改完代码后用 Bash 验证编译通过: cmake --build build --target backend_all
+4. 编译通过后，列出你修改了哪些文件，简要说明改了什么
+5. **不要运行测试**，那不是你的职责
+6. **不要运行 openspec verify**，那不是你的职责
+7. 不要与其他子 Agent 通信，有任何问题通过主 Agent 转达
 ```
 
 ### 派发 TestRunner 的提示词
@@ -359,7 +384,7 @@ Agent(
 
 修改的文件: {changes_since_last_verify.files}
 实现摘要: {changes_since_last_verify.summary}
-已完成的 tasks: {completed_tasks_in_this_round}
+已完成的 tasks: {completed_tasks}
 
 {如果有 previous_report:}
 ## 上次验证报告
@@ -371,7 +396,7 @@ Agent(
 1. 读取所有需求产物文件（proposal/design/tasks）
 
 2. **完整性检查:**
-   - tasks.md 中当前任务的检查项是否全部完成
+   - tasks.md 中所有任务的检查项是否全部完成
    - 如果有需求描述（proposal 中的 Requirements），是否都有代码对应
 
 3. **正确性检查:**
@@ -410,7 +435,7 @@ Agent(
 ```
 ## 验证报告: <change-name>
 
-### 任务: <task-id> <title>
+### 全局总览
 
 | 维度 | 状态 |
 |------|------|
@@ -440,5 +465,8 @@ Agent(
 - **透明中转:** 主 Agent 从子 Agent 收到的信息必须原样传递，不添不减
 - **超限处理:** 单个任务重试 5 次仍不通过 → 暂停，展示失败历史，询问用户
 - **编译失败视为测试失败:** build_fail → FIX_BUILD → 走 fix_test 路径
-- **验证前必须测试通过:** 不允许跳过测试直接验证
+- **验证前必须所有任务测试通过:** 不允许跳过测试直接进入最终 VERIFY
+- **TEST 等待模块+单测完成:** 没写完单测、没到模块边界，不触发 TEST。IMPLEMENT 可连续推进多个文件
+- **单测随模块一起写:** 每实现完一个模块立即写对应单测，禁止攒到最后一起补
+- **VERIFY 仅在所有任务后执行一次:** 不逐任务验证，所有任务 TEST 通过后做一次全局需求对齐
 - **保持 Agent 隔离:** 每个子 Agent 的 prompt 中必须明确"不要与其他子 Agent 通信"

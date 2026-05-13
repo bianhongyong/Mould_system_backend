@@ -1,0 +1,9 @@
+syntax = "proto3";
+package mould.gateway.scenario;
+
+// 质检场景 — 图片附属的质检批次参数
+message QualityInspection {
+  int32 batch_id = 1;             // 批次号
+  string inspection_standard = 2;  // 质检标准版本
+  string inspector_id = 3;         // 质检员 ID（可空，表示自动检测）
+}

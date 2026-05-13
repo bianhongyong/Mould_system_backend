@@ -37,9 +37,9 @@ namespace mould::comm {
 /// Taking consumers offline after remote process failure is a control-plane concern; use
 /// `ShmBusControlPlane::{ReadConsumerOwnerIdentity,TakeConsumerOfflineIfOwner,...}` from the supervisor.
 ///
-/// Threading: all APIs except the unified subscriber pump thread are assumed to run on one
-/// application thread. `runtime_mutex_` serializes **mutations and lookups** of `runtime_by_channel_`
-/// (lazy attach, topology setup, pump discovery). Each `ChannelRuntime` is immutable after emplace:
+/// Threading: `runtime_by_channel_` / `topology_index_` are populated during SetChannelTopology*
+/// (single-threaded init) and immutable thereafter. Hot publish path reads them without locking.
+/// `runtime_mutex_` is retained for init sequencing and pump-thread coordination only.
 /// `segment` and `ring` are stable handles into fixed shared-memory layout; they are not the locus of
 /// publish/subscribe data races. Cross-thread and cross-process correctness for slots, sequences,
 /// and consumer membership is enforced inside `RingLayoutView` / ring header atomics (lower layer),
@@ -82,6 +82,10 @@ class ShmBusRuntime : public IPubSubBus {
   /// Starts reactor-local resources only; safe to call once before Subscribe in the child.
   void AfterForkInChildProcess();
 
+  /// Stops the unified subscriber pump thread and releases all subscriber resources.
+  /// Safe to call multiple times; second call is a no-op on already-cleared state.
+  void StopAllSubscribers();
+
  private:
   struct SubscriberEntry {
     std::string channel;
@@ -119,7 +123,6 @@ class ShmBusRuntime : public IPubSubBus {
   /// the runtime table during `SetChannelTopology`.
   bool EnsureChannelMappedAttachLocked(const std::string& channel);
   bool ChannelMappedLocked(const std::string& channel) const;
-  void StopAllSubscribers();
 
   /// Protects `runtime_by_channel_` and attach/mapping helpers (including pump re-lookup). Does not
   /// substitute for ring-level synchronization; see `ChannelRuntime` comment.

@@ -1,0 +1,20 @@
+{
+  "__comment__": "HTTP Ingress Gateway 模块配置模板",
+  "listen_addr": "0.0.0.0",
+  "port": 8080,
+  "max_connections": 100,
+  "max_body_size_bytes": 52428800,
+  "max_rate_per_conn": 10,
+  "qps_limit": 100,
+  "request_timeout_ms": 5000,
+  "oss": {
+    "__comment__": "OSS 凭证在 OssClientFacade 源码中直接写死，此处仅配置路径和行为",
+    "upload_path_template": "images/{node_id}/{date}/{image_id}.jpg",
+    "retry_count": 3,
+    "retry_backoff_base_ms": 1000
+  },
+  "image_validation": {
+    "allowed_formats": ["jpeg", "png", "bmp"],
+    "max_field_length": 256
+  }
+}

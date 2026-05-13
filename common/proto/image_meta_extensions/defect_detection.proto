@@ -1,0 +1,9 @@
+syntax = "proto3";
+package mould.gateway.scenario;
+
+// 缺陷检测场景 — 图片附属的检测参数
+message DefectDetection {
+  string product_type = 1;       // 产品型号
+  double confidence_threshold = 2; // 置信度阈值 (0.0 ~ 1.0)
+  repeated string regions_of_interest = 3;  // 感兴趣区域列表
+}

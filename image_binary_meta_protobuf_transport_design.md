@@ -23,8 +23,6 @@
 - `common/comm/src/shm_bus_runtime.cpp`
 - `common/config/include/channel_topology_config.hpp`
 - `common/config/src/channel_topology_config.cpp`
-- `common/proto/mould/comm/image_meta.proto`
-- `common/proto/mould/comm/aggregate.proto`
 - `common/proto/SCHEMA_VERSION.md`
 - `common/comm/payload_codec_registry_test.cpp`
 - `common/config/channel_topology_config_gtest.cpp`
@@ -96,7 +94,7 @@ class IPayloadCodec {
 
 ### `ImageMeta`
 
-图片元数据结构，对应 `common/proto/mould/comm/image_meta.proto`：
+图片元数据字段语义（传输层为 `meta_pb_bytes` 的 protobuf wire；仓库内不再维护独立 `image_meta.proto` 文件）：
 
 - `encoding`：JPEG、PNG、NV12、RAW 等编码枚举。
 - `checksum_type`
@@ -247,10 +245,8 @@ slot_payload_bytes=3145728
 
 ## Protobuf 组织与演进
 
-新增文件：
+相关文件：
 
-- `common/proto/mould/comm/image_meta.proto`
-- `common/proto/mould/comm/aggregate.proto`
 - `common/proto/SCHEMA_VERSION.md`
 
 演进规则：
@@ -258,7 +254,7 @@ slot_payload_bytes=3145728
 - 字段号只增不改不复用。
 - 废弃字段必须 `reserved`。
 - 新增字段应尽量使用 `optional` 或具备默认语义。
-- 聚合 proto 变化必须更新 `schema_version` 记录。
+- 若重新引入聚合/元数据 proto，其变化须同步更新 `schema_version` 记录。
 - 消费端解析必须忽略未知字段，保持向后兼容。
 
 当前代码提供 `ValidateProtoReservedFieldNumbers` 做 reserved 字段号复用校验的基础能力。
@@ -301,7 +297,7 @@ ctest --test-dir build -R 'PayloadCodecRegistry|ImageBinaryMetaTransport|ImageMe
 
 ## 后续建议
 
-- 将 `ImageMeta` protobuf 由当前手写 wire helper 进一步接入正式 protoc 生成代码。
+- 若需要强类型 `ImageMeta`，可另起 proto 定义并接入 protoc 生成代码（替代手写 wire）。
 - 将 `ValidateProtoReservedFieldNumbers` 扩展为完整 proto lint 工具。
 - 在消费链路中补齐 typed decode 的业务对象分发入口。
 - 将 image checksum 算法从 `simple32` 扩展为 CRC32、SHA256 等可配置策略。

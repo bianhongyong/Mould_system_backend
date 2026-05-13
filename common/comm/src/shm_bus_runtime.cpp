@@ -198,28 +198,63 @@ bool ShmBusRuntime::TryDispatchOneRingMessage(
 
   const auto next_read = ring.LoadConsumerCursor(subscriber->consumer_index);
   if (!next_read.has_value() || *next_read == 0) {
-    VLOG(1) << "TryDispatchOneRingMessage: no cursor channel=" << subscriber->channel
-            << " has_next=" << next_read.has_value()
-            << " next_read=" << (next_read.has_value() ? *next_read : 0U);
+    LOG(INFO) << "[ShmPump] no cursor channel=" << subscriber->channel
+              << " consumer_index=" << subscriber->consumer_index
+              << " has_cursor=" << next_read.has_value()
+              << " cursor=" << (next_read.has_value() ? *next_read : 0U);
     return false;
   }
   const auto* header = ring.Header();
   if (header == nullptr) {
-    VLOG(1) << "TryDispatchOneRingMessage: null header channel=" << subscriber->channel;
+    LOG(INFO) << "[ShmPump] null header channel=" << subscriber->channel;
     return false;
   }
   if (header->slot_count == 0) {
-    VLOG(1) << "TryDispatchOneRingMessage: slot_count=0 channel=" << subscriber->channel;
+    LOG(INFO) << "[ShmPump] slot_count=0 channel=" << subscriber->channel;
     return false;
   }
   RingSlotReservation reservation{};
   std::uint32_t slot_index = 0;
   if (!ring.TryReadNextForConsumer(subscriber->consumer_index, &reservation, &slot_index)) {
-    VLOG(1) << "TryDispatchOneRingMessage: TryReadNextForConsumer false (strict no-skip) channel="
-            << subscriber->channel << " consumer_index=" << subscriber->consumer_index
-            << " next_read=" << *next_read;
+    const std::uint64_t expected_seq = *next_read;
+    const std::uint32_t computed_slot = header->slot_count > 0
+        ? static_cast<std::uint32_t>((expected_seq - 1U) % static_cast<std::uint64_t>(header->slot_count))
+        : 0U;
+    const auto* slot_meta = ring.Slots();
+    if (slot_meta != nullptr && computed_slot < header->slot_count) {
+      const std::uint64_t raw = slot_meta[computed_slot].state_sequence.load(std::memory_order_seq_cst);
+      const auto st = UnpackSlotState(raw);
+      const std::uint64_t slot_seq = UnpackSlotSequence(raw);
+      if (st == SlotState::kReserved && slot_seq == expected_seq) {
+        // CommitSlot -> NotifyEventFd 严格有序: eventfd 触发时槽一定已提交。
+        // 看到 kReserved 仅因 MESI 缓存一致性延迟(跨 CPU cache line 失效尚未到达)，
+        // 是瞬态条件，必在数微秒内自愈。无限 yield 等待直到 cache 传播。
+        while (!ring.TryReadNextForConsumer(subscriber->consumer_index, &reservation, &slot_index)) {
+          LOG(INFO) << "[ShmPump] TryReadNextForConsumer spin-recovered channel=" << subscriber->channel
+                    << " expected_seq=" << expected_seq
+                    << " computed_slot=" << computed_slot
+                    << " slot_index=" << slot_index;
+          std::this_thread::yield();
+        }
+        goto dispatch_message;
+      }
+    }
+    LOG(INFO) << "[ShmPump] TryReadNextForConsumer failed channel=" << subscriber->channel
+                << " consumer_index=" << subscriber->consumer_index
+                << " expected_seq=" << expected_seq
+                << " computed_slot=" << computed_slot
+                << " slot="
+                << (slot_meta != nullptr && computed_slot < header->slot_count
+                        ? ([](const SlotMeta* sm, std::uint32_t idx) -> std::string {
+                             const std::uint64_t v = sm[idx].state_sequence.load(std::memory_order_seq_cst);
+                             return "state=" + std::to_string(static_cast<std::uint32_t>(UnpackSlotState(v)))
+                                  + " slot_seq=" + std::to_string(UnpackSlotSequence(v));
+                           })(slot_meta, computed_slot)
+                        : "unknown");
     return false;
   }
+
+dispatch_message:
   if (reservation.sequence < *next_read) {
     VLOG(1) << "TryDispatchOneRingMessage: sequence behind cursor channel=" << subscriber->channel
             << " reservation_sequence=" << reservation.sequence << " next_read=" << *next_read
@@ -354,9 +389,15 @@ void ShmBusRuntime::UnifiedSubscriberPumpLoop() {
           break;
         }
         if (!TryDispatchOneRingMessage(ring, sub, &acker, delivery_mode)) {
+          LOG(INFO) << "shm_pump: TryDispatchOneRingMessage failed channel=" << sub->channel
+                    << " budget=" << notify_budget << " n=" << n << " already_dispatched=" << dispatched;
           break;
         }
         ++dispatched;
+        if (dispatched % 1000U == 0U) {
+          LOG(INFO) << "shm_pump: dispatch progress channel=" << sub->channel
+                    << " dispatched=" << dispatched;
+        }
       }
       if (dispatched < notify_budget) {
         LOG(INFO) << "shm_pump: dispatched fewer than eventfd budget channel=" << sub->channel
@@ -407,19 +448,17 @@ bool ShmBusRuntime::Publish(
 
 absl::StatusOr<std::uint64_t> ShmBusRuntime::PublishWithStatus(
     const std::string& module_name, const std::string& channel, ByteBuffer payload) {
-  RingLayoutView ring;
-  {
-    std::lock_guard<std::mutex> lock(runtime_mutex_);
-    const auto runtime_iter = runtime_by_channel_.find(channel);
-    if (runtime_iter == runtime_by_channel_.end()) {
-      return absl::NotFoundError("channel runtime not found: " + channel);
-    }
-    const auto topology_iter = topology_index_.find(channel);
-    if (topology_iter == topology_index_.end()) {
-      return absl::NotFoundError("channel topology not found: " + channel);
-    }
-    ring = runtime_iter->second.ring;
+  // runtime_by_channel_ 和 topology_index_ 在 SetChannelTopology* 阶段一次性写入，
+  // 之后完全只读（参见 ChannelRuntime 注释）。此处无锁读取，规避热门路径上的互斥竞争。
+  const auto runtime_iter = runtime_by_channel_.find(channel);
+  if (runtime_iter == runtime_by_channel_.end()) {
+    return absl::NotFoundError("channel runtime not found: " + channel);
   }
+  const auto topology_iter = topology_index_.find(channel);
+  if (topology_iter == topology_index_.end()) {
+    return absl::NotFoundError("channel topology not found: " + channel);
+  }
+  RingLayoutView ring = runtime_iter->second.ring;
 
   MessageEnvelope envelope;
   RingHealthMetrics before_metrics{};
@@ -470,6 +509,8 @@ absl::StatusOr<std::uint64_t> ShmBusRuntime::PublishWithStatus(
 
   (void)before_metrics;
   (void)after_metrics;
+  LOG(INFO) << "[ShmPublish success] module=" << module_name << " channel=" << channel
+            << " sequence=" << envelope.sequence;
   return envelope.sequence;
 }
 

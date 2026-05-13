@@ -15,6 +15,7 @@ enable_testing()
 
 add_subdirectory(common)
 add_subdirectory(logging)
+add_subdirectory(gate)
 add_subdirectory(services/backend)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/services/broker/CMakeLists.txt")
   add_subdirectory(services/broker)
@@ -28,7 +29,7 @@ add_custom_target(
   backend_all
   DEPENDS
     backend_main
-    third_party_probe
+    gate_core
 )
 if(TARGET broker_all)
   add_dependencies(backend_all broker_all)

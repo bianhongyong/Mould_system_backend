@@ -1,0 +1,36 @@
+syntax = "proto3";
+package mould.gateway;
+
+import "google/protobuf/any.proto";
+
+// ImageFrameIngress — 网关图片入口帧消息
+//
+// 采用分层设计：
+//   公共层（本消息的顶层字段）─ 所有场景共用的字段
+//   扩展层（scenario_extensions）─ 每种场景定义独立 proto，
+//     通过 google.protobuf.Any 承载，消费者按需解析
+//
+// 使用方式：
+//   - 网关组装公共字段 + 透传额外元数据
+//   - 下游模块按场景类型解包 scenario_extensions 中的 Any 消息
+//   - 新增场景只需定义新 proto，不影响顶层 schema
+//
+// 场景 proto 示例（由各场景模块自行定义）:
+//   mould.gateway.scenario.DefectDetection
+//   mould.gateway.scenario.QualityInspection
+message ImageFrameIngress {
+  // ──── 公共字段 ────
+  string request_id = 1;      // 请求唯一标识 (gw-{timestamp}-{hex})
+  string node_id = 2;         // 采集节点 ID (如 camera-01)
+  string capture_time = 3;    // ISO 8601 采集时间
+  string image_format = 4;    // 图片格式 (jpeg/png/bmp)
+  bytes  image_data = 5;      // 图片二进制数据
+
+  // ──── 扩展层 ────
+  // 场景差异化扩展，每种场景定义独立 proto 消息
+  repeated google.protobuf.Any scenario_extensions = 10;
+
+  // 额外元数据（来自 HTTP 表单字段的透传键值对，
+  // 未被映射到公共字段的元数据统一放入此处）
+  map<string, string> extra_metadata = 11;
+}
